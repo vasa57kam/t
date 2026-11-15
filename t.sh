@@ -1,47 +1,132 @@
 #!/usr/bin/env bash
 # =====================================================================
-#  PROXY MANAGER — единый установщик
-#  Веб-терминал + файлы + 3x-ui биллинг + бот + расширение + резерв
-#  Запуск: bash install.sh          (домен по умолчанию vps.ddns.net)
-#          DOMAIN=example.com bash install.sh
+#  PROXY MANAGER — единый установщик (IP-first)
+#  Ставится по IP, домен и Let's Encrypt подключаются потом из админки.
+#  Запуск: bash install.sh
+#          DOMAIN=example.com bash install.sh   (если домен уже указывает на сервер)
 # =====================================================================
 set -uo pipefail
-DOMAIN="${DOMAIN:-vps.ddns.net}"
 APP=/opt/proxy-manager
 WU="${WU:-admin}"
 WP="${WP:-$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 16)}"
 [ "$(id -u)" = 0 ] || { echo "Нужен root"; exit 1; }
 
-echo "=========== 1. Пакеты ==========="
+echo "=========== 1. Пакеты и определение IP ==========="
 apt-get update -y
 DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-venv python3-pip \
-  nginx certbot curl git zip openssl ufw ca-certificates openssh-client
+  nginx certbot curl git zip openssl ufw ca-certificates openssh-client dnsutils
 mkdir -p "$APP/templates" "$APP/extension" /etc/pm-web /var/www/certbot /opt/rescue-agent
 
-echo "=========== 2. Сертификат ==========="
-cat > /etc/nginx/sites-available/acme <<NG
-server { listen 80; server_name ${DOMAIN};
-  location /.well-known/acme-challenge/ { root /var/www/certbot; }
-  location / { return 200 "ok"; } }
-NG
-ln -sf /etc/nginx/sites-available/acme /etc/nginx/sites-enabled/acme
-rm -f /etc/nginx/sites-enabled/default
-nginx -t && systemctl enable --now nginx && systemctl restart nginx
-CERT="/etc/letsencrypt/live/${DOMAIN}/fullchain.pem"
-KEY="/etc/letsencrypt/live/${DOMAIN}/privkey.pem"
-if [ ! -f "$CERT" ]; then
-  certbot certonly --webroot -w /var/www/certbot -d "$DOMAIN" --non-interactive \
-    --agree-tos --register-unsafely-without-email --deploy-hook "systemctl reload nginx" || true
-fi
-if [ ! -f "$CERT" ]; then
-  echo "!! Let's Encrypt не выдался — самоподписанный (браузер предупредит)"
+SRV_IP=$(curl -4 -s --max-time 8 https://api.ipify.org || true)
+[ -z "$SRV_IP" ] && SRV_IP=$(curl -4 -s --max-time 8 https://ifconfig.me || true)
+[ -z "$SRV_IP" ] && SRV_IP=$(hostname -I | awk '{print $1}')
+DOMAIN="${DOMAIN:-}"
+echo "Публичный IP: $SRV_IP"
+[ -n "$DOMAIN" ] && echo "Домен задан: $DOMAIN" || echo "Домен не задан — работаем по IP (домен добавишь в админке)"
+
+echo "=========== 2. Генератор сетевой конфигурации ==========="
+cat > "$APP/net-setup.sh" <<'NETSETUP'
+#!/usr/bin/env bash
+# Пересобирает сертификат (если нужно) и конфиг nginx.
+# Вызывается установщиком и из админки при смене домена/сертификата.
+set -uo pipefail
+APP=/opt/proxy-manager
+cd "$APP" || exit 1
+read -r DOMAIN CERT KEY <<<"$(./venv/bin/python - <<'PY'
+import common as cm
+s=cm.S(); c,k=cm.tlspaths(s)
+print((s.get("domain") or "-"), (c or "-"), (k or "-"))
+PY
+)"
+[ "$DOMAIN" = "-" ] && DOMAIN=""
+[ "$CERT" = "-" ] && CERT=""
+[ "$KEY" = "-" ] && KEY=""
+IP=$(curl -4 -s --max-time 6 https://api.ipify.org || true)
+[ -z "$IP" ] && IP=$(hostname -I | awk '{print $1}')
+SN="${DOMAIN:-$IP}"
+[ -z "$SN" ] && { echo "Не удалось определить ни домен, ни IP"; exit 1; }
+
+if [ -z "$CERT" ] || [ ! -f "$CERT" ] || [ ! -f "$KEY" ]; then
+  echo "Валидного сертификата нет — генерирую самоподписанный для: $SN $IP"
   openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
-    -keyout /etc/pm-web/self.key -out /etc/pm-web/self.crt -subj "/CN=${DOMAIN}"
+    -keyout /etc/pm-web/self.key -out /etc/pm-web/self.crt \
+    -subj "/CN=$SN" -addext "subjectAltName=DNS:$SN,IP:$IP,IP:127.0.0.1" 2>/dev/null
+  chmod 600 /etc/pm-web/self.key
   CERT=/etc/pm-web/self.crt; KEY=/etc/pm-web/self.key
 fi
-printf '%s\n' "$WU" "$WP" > /etc/pm-web/cred; chmod 600 /etc/pm-web/cred
+echo "Сертификат: $CERT"
 
-echo "=========== 3. Веб-терминал + файлы ==========="
+cat > /etc/nginx/sites-available/proxy-manager <<NG
+server {
+  listen 80 default_server;
+  server_name ${DOMAIN:-_};
+  location /.well-known/acme-challenge/ { root /var/www/certbot; }
+  location / { return 301 https://\$host\$request_uri; }
+}
+server {
+  listen 443 ssl default_server;
+  server_name ${DOMAIN:-_};
+  ssl_certificate ${CERT}; ssl_certificate_key ${KEY};
+  ssl_protocols TLSv1.2 TLSv1.3;
+  client_max_body_size 4096m;
+  location / { proxy_pass http://127.0.0.1:8002; proxy_set_header Host \$host;
+    proxy_set_header X-Real-IP \$remote_addr; proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto https; }
+}
+server {
+  listen 8443 ssl;
+  server_name ${DOMAIN:-_};
+  ssl_certificate ${CERT}; ssl_certificate_key ${KEY};
+  ssl_protocols TLSv1.2 TLSv1.3;
+  client_max_body_size 4096m;
+  location / { proxy_pass http://127.0.0.1:8003; proxy_set_header Host \$host;
+    proxy_set_header X-Real-IP \$remote_addr; proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto https; }
+}
+server {
+  listen 2096 ssl;
+  server_name ${DOMAIN:-_};
+  ssl_certificate ${CERT}; ssl_certificate_key ${KEY};
+  ssl_protocols TLSv1.2 TLSv1.3;
+  location / { proxy_pass http://127.0.0.1:8002; proxy_set_header Host \$host;
+    proxy_set_header X-Forwarded-Proto https; }
+}
+server {
+  listen 2087 ssl;
+  server_name ${DOMAIN:-_};
+  ssl_certificate ${CERT}; ssl_certificate_key ${KEY};
+  ssl_protocols TLSv1.2 TLSv1.3;
+  location / { proxy_pass http://127.0.0.1:7681; proxy_http_version 1.1;
+    proxy_set_header Upgrade \$http_upgrade; proxy_set_header Connection "upgrade";
+    proxy_set_header Host \$host; proxy_read_timeout 86400; proxy_send_timeout 86400; }
+}
+server {
+  listen 2083 ssl;
+  server_name ${DOMAIN:-_};
+  ssl_certificate ${CERT}; ssl_certificate_key ${KEY};
+  ssl_protocols TLSv1.2 TLSv1.3;
+  client_max_body_size 4096m;
+  location / { proxy_pass http://127.0.0.1:8080; proxy_set_header Host \$host;
+    proxy_set_header X-Forwarded-Proto https; proxy_read_timeout 3600; }
+}
+NG
+rm -f /etc/nginx/sites-enabled/default /etc/nginx/sites-enabled/acme
+ln -sf /etc/nginx/sites-available/proxy-manager /etc/nginx/sites-enabled/proxy-manager
+nginx -t && systemctl reload nginx || { echo "ОШИБКА КОНФИГА NGINX"; nginx -t; exit 1; }
+
+./venv/bin/python - <<PY
+import common as cm
+d="${DOMAIN}"; ip="${IP}"; base=d or ip
+cm.setS({"public_url":"https://"+base,"admin_url":"https://"+base+":8443","sub_url_base":"https://"+base+":2096"})
+print("URL обновлены: https://"+base)
+PY
+systemctl restart rescue-agent 2>/dev/null || true
+echo "Сеть настроена для: $SN"
+NETSETUP
+chmod +x "$APP/net-setup.sh"
+
+echo "=========== 3. Веб-терминал и файловый менеджер ==========="
+printf '%s\n' "$WU" "$WP" > /etc/pm-web/cred; chmod 600 /etc/pm-web/cred
 command -v ttyd >/dev/null 2>&1 || {
   curl -fsSL -o /usr/local/bin/ttyd https://github.com/tsl0922/ttyd/releases/latest/download/ttyd.x86_64
   chmod +x /usr/local/bin/ttyd; }
@@ -74,25 +159,8 @@ RestartSec=3
 WantedBy=multi-user.target
 U
 systemctl daemon-reload && systemctl enable --now web-term web-files
-
-cat > /etc/nginx/conf.d/pm-web.conf <<NG
-server { listen 2087 ssl; server_name ${DOMAIN};
-  ssl_certificate ${CERT}; ssl_certificate_key ${KEY}; ssl_protocols TLSv1.2 TLSv1.3;
-  location / { proxy_pass http://127.0.0.1:7681; proxy_http_version 1.1;
-    proxy_set_header Upgrade \$http_upgrade; proxy_set_header Connection "upgrade";
-    proxy_set_header Host \$host; proxy_read_timeout 86400; proxy_send_timeout 86400; } }
-server { listen 2083 ssl; server_name ${DOMAIN};
-  ssl_certificate ${CERT}; ssl_certificate_key ${KEY}; ssl_protocols TLSv1.2 TLSv1.3;
-  client_max_body_size 4096m;
-  location / { proxy_pass http://127.0.0.1:8080; proxy_set_header Host \$host;
-    proxy_set_header X-Forwarded-Proto https; proxy_read_timeout 3600; } }
-NG
-nginx -t && systemctl reload nginx
+systemctl enable --now nginx
 command -v ufw >/dev/null && { for p in 80 443 2087 2083 8443 8444 2096 22 2222; do ufw allow $p/tcp; done; ufw allow 20000:21000/tcp; } || true
-echo
-echo ">>> ВЕБ-ТЕРМИНАЛ: https://${DOMAIN}:2087  (${WU} / ${WP})"
-echo ">>> ФАЙЛЫ:        https://${DOMAIN}:2083"
-echo
 
 echo "=========== 4. Модули Proxy Manager ==========="
 cd "$APP"
@@ -117,7 +185,7 @@ DEF={"panel_name":"Proxy Manager","bot_token":"","admin_tg_id":"","bot_username"
 "domain":"","sni":"","vless_port":"443","reality_pbk":"","reality_sid":"","fp":"chrome","reality_spx":"/",
 "billing_enabled":"0","price":"100","period_days":"30","billing_secret":secrets.token_hex(16),
 "http_port_start":"20000","http_port_end":"21000","inbounds_cache":"{}","require_plan":"1",
-"public_url":"","admin_url":"","sub_url_base":"","proxy_tls":"1","tls_cert":"","tls_key":"",
+"public_url":"","admin_url":"","sub_url_base":"","proxy_tls":"1","tls_cert":"","tls_key":"","le_email":"",
 "stat_clients":"","stat_clients_label":"пользователей","stat_presets":"","stat_presets_label":"сервисов",
 "stat_third":"24/7","stat_third_label":"поддержка","guest_enabled":"0","guest_token":secrets.token_urlsafe(24),
 "ext_presets":json.dumps(PRESETS,ensure_ascii=False),"ext_lists":json.dumps({"telegram_actual":"","all_ru_blocked":""})}
@@ -154,6 +222,15 @@ def db():
 def rnd(n,up=False):
     al=(string.ascii_uppercase+string.digits) if up else (string.ascii_lowercase+string.digits)
     return "".join(secrets.choice(al) for _ in range(n))
+
+def server_ip():
+    for u in ("https://api.ipify.org","https://ifconfig.me"):
+        try:
+            r=requests.get(u,timeout=6)
+            if r.ok and re.match(r"^\d+\.\d+\.\d+\.\d+$",r.text.strip()): return r.text.strip()
+        except Exception: pass
+    try: return socket.gethostbyname(socket.gethostname())
+    except Exception: return "127.0.0.1"
 
 def init_db():
     with db() as c:
@@ -196,8 +273,8 @@ def xui(s,t=15):
     from xui_api import XUI
     return XUI(s["xui_url"],s["xui_user"],s["xui_pass"],s.get("xui_api_token",""),timeout=t)
 
-def host(s): return s.get("domain") or "SERVER_IP"
-def pbase(s): return (s.get("public_url") or f"http://{host(s)}:8002").rstrip("/")
+def host(s): return s.get("domain") or server_ip()
+def pbase(s): return (s.get("public_url") or f"https://{host(s)}").rstrip("/")
 def cab(c,s): return f"{pbase(s)}/client/{c['tg_id']}"
 def subbase(s): return (s.get("sub_url_base") or pbase(s)).rstrip("/")
 def sub(c,s): return f"{subbase(s)}/sub/{c.get('sub_id') or c['tg_id']}"
@@ -211,10 +288,12 @@ def tlspaths(s):
     c=(s.get("tls_cert") or "").strip(); k=(s.get("tls_key") or "").strip()
     if c and k and os.path.exists(c) and os.path.exists(k): return c,k
     d=s.get("domain") or ""
-    for c,k in ((f"/etc/letsencrypt/live/{d}/fullchain.pem",f"/etc/letsencrypt/live/{d}/privkey.pem"),
-                (f"/root/cert/{d}/fullchain.pem",f"/root/cert/{d}/privkey.pem"),
-                ("/etc/pm-web/self.crt","/etc/pm-web/self.key")):
-        if os.path.exists(c) and os.path.exists(k): return c,k
+    if d:
+        for c,k in ((f"/etc/letsencrypt/live/{d}/fullchain.pem",f"/etc/letsencrypt/live/{d}/privkey.pem"),
+                    (f"/root/cert/{d}/fullchain.pem",f"/root/cert/{d}/privkey.pem")):
+            if os.path.exists(c) and os.path.exists(k): return c,k
+    if os.path.exists("/etc/pm-web/self.crt") and os.path.exists("/etc/pm-web/self.key"):
+        return "/etc/pm-web/self.crt","/etc/pm-web/self.key"
     return "",""
 
 def tlson(s):
@@ -428,7 +507,7 @@ def sign_ok(sec,tg_id,amt,sg):
     return hmac.compare_digest(w,str(sg or ""))
 
 def extzip(s,h):
-    url=pbase(s) if s.get("public_url") else f"http://{h}:8002"
+    url=pbase(s)
     b=io.BytesIO()
     with zipfile.ZipFile(b,"w",zipfile.ZIP_DEFLATED) as z:
         for p in sorted((BASE/"extension").rglob("*")):
@@ -441,7 +520,9 @@ def _run(cmd,t=6):
     except Exception as e: return f"(err {e})"
 
 def report():
-    s=S(); L=["=== PROXY MANAGER REPORT ===",time.strftime("%F %T"),f"domain={s.get('domain')} public={s.get('public_url')}"]
+    s=S(); L=["=== PROXY MANAGER REPORT ===",time.strftime("%F %T"),
+              f"domain={s.get('domain') or '(нет, работаем по IP)'} ip={server_ip()}",
+              f"public={s.get('public_url')} cert={tlspaths(s)[0] or 'нет'}"]
     try:
         for v in ["proxy-admin","proxy-web","proxy-bot","proxy-monitor","nginx","x-ui","web-term","web-files","rescue-agent"]:
             L.append("svc %-15s %s"%(v,_run("systemctl is-active "+v,4)))
@@ -660,7 +741,7 @@ class XUI:
 PY_XUI
 
 cat > admin_app.py <<'PY_ADMIN'
-import asyncio,json,secrets,time,os,re,subprocess,shutil,tempfile,zipfile,py_compile,uuid as U
+import asyncio,json,secrets,time,os,re,subprocess,shutil,tempfile,zipfile,py_compile,socket,uuid as U
 from pathlib import Path
 from urllib.parse import quote
 from fastapi import FastAPI,Request
@@ -687,7 +768,8 @@ def _regs():
     with cm.db() as c: return [dict(r) for r in c.execute("SELECT * FROM registrations ORDER BY id DESC LIMIT 100")]
 
 T.env.globals.update(get_plans=cm.plans,get_plan=cm.plan,get_promos=cm.promos,
-    get_regs=_regs,get_clients_full=cm.clients,load_json=json.loads)
+    get_regs=_regs,get_clients_full=cm.clients,load_json=json.loads,
+    server_ip=cm.server_ip,cert_path=lambda: cm.tlspaths(cm.S())[0] or "нет")
 
 @app.get("/login")
 def lp(r:Request,msg:str=""): return T.TemplateResponse(r,"login.html",{"msg":msg})
@@ -919,7 +1001,6 @@ async def ac(r:Request):
     up={"inbound_id":str(ch["id"]),"vless_port":str(p.get("port") or ch.get("port"))}
     for k,v in (("sni",p.get("sni")),("reality_pbk",p.get("pbk")),("reality_sid",p.get("sid")),("fp",p.get("fp"))):
         if v: up[k]=v
-    if not s.get("domain"): up["domain"]=r.url.hostname or ""
     cm.setS(up); return rd(f"Готово: inbound №{ch['id']}, порт {up['vless_port']}, SNI {up.get('sni','—')}")
 
 @app.post("/clients/import")
@@ -1205,6 +1286,59 @@ def ez(r:Request):
     if not auth(r): return RedirectResponse("/login",status_code=303)
     s=cm.S(); return Response(cm.extzip(s,s.get("domain") or r.url.hostname),media_type="application/zip",
         headers={"Content-Disposition":"attachment; filename=proxy-manager-extension.zip"})
+
+# ================= ДОМЕН И HTTPS =================
+NETLOG="/opt/proxy-manager/net_result.txt"
+CERTLOG="/opt/proxy-manager/cert_result.txt"
+
+@app.post("/net/apply")
+async def net_apply(r:Request):
+    if not auth(r): return RedirectResponse("/login",status_code=303)
+    f=await r.form()
+    dom=str(f.get("domain","")).strip().lower()
+    dom=re.sub(r"^https?://","",dom).split("/")[0]
+    cm.setS({"domain":dom,"tls_cert":str(f.get("tls_cert","")).strip(),
+             "tls_key":str(f.get("tls_key","")).strip(),"le_email":str(f.get("le_email","")).strip()})
+    open(NETLOG,"w").write("ПРИМЕНЯЕТСЯ…")
+    subprocess.Popen(["bash","-c",f"bash {cm.BASE}/net-setup.sh > {NETLOG} 2>&1"],
+                     stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+    return rd("Применяю настройки сети. Нажми «Статус сети» через 5 секунд. Адрес админки мог измениться!")
+
+@app.get("/net/status")
+def net_status(r:Request):
+    if not auth(r): return JSONResponse({"ok":False},status_code=401)
+    s=cm.S(); c,k=cm.tlspaths(s)
+    info=f"IP сервера: {cm.server_ip()}\nДомен: {s.get('domain') or '(не задан)'}\nСертификат: {c or 'нет'}\nПубличный URL: {s.get('public_url')}\nАдминка: {s.get('admin_url')}\n"
+    try: info+="\n--- последний запуск ---\n"+open(NETLOG).read()
+    except Exception: info+="\n(настроек сети ещё не применяли)"
+    return {"ok":True,"text":info}
+
+@app.post("/net/cert")
+async def net_cert(r:Request):
+    if not auth(r): return RedirectResponse("/login",status_code=303)
+    s=cm.S(); d=(s.get("domain") or "").strip()
+    if not d: return rd("Сначала укажи домен и нажми «Применить и перенастроить»")
+    ip=cm.server_ip()
+    try: dip=socket.gethostbyname(d)
+    except Exception: dip=None
+    warn="" if dip==ip else f"\nВНИМАНИЕ: {d} резолвится в {dip}, а IP сервера {ip}. Если DNS ещё не обновился — выпуск не удастся.\n"
+    em=(s.get("le_email") or "").strip()
+    mail=f"-m {em}" if em else "--register-unsafely-without-email"
+    open(CERTLOG,"w").write("ЗАПРОС ВЫПОЛНЯЕТСЯ…"+warn)
+    sc=(f"{{ echo 'Запускаю certbot для {d}'; "
+        f"certbot certonly --webroot -w /var/www/certbot -d {d} --non-interactive --agree-tos {mail} "
+        f"--deploy-hook 'systemctl reload nginx' 2>&1; "
+        f"if [ -f /etc/letsencrypt/live/{d}/fullchain.pem ]; then "
+        f"echo 'СЕРТИФИКАТ ПОЛУЧЕН'; bash {cm.BASE}/net-setup.sh 2>&1; "
+        f"else echo 'НЕ УДАЛОСЬ. Проверь: домен указывает на {ip}, порт 80 открыт снаружи.'; fi; }} > {CERTLOG} 2>&1")
+    subprocess.Popen(["bash","-c",sc],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+    return rd("Запрос сертификата запущен. Нажми «Статус сертификата» через 15-30 секунд."+warn)
+
+@app.get("/net/certstatus")
+def net_certstatus(r:Request):
+    if not auth(r): return JSONResponse({"ok":False},status_code=401)
+    try: return {"ok":True,"text":open(CERTLOG).read()}
+    except Exception: return {"ok":True,"text":"Запросов сертификата ещё не было."}
 PY_ADMIN
 
 cat > web_app.py <<'PY_WEB'
@@ -1239,7 +1373,7 @@ def used(c,s):
 @app.get("/")
 def idx(r:Request,msg:str=""):
     s=cm.S(); cs=cm.clients()
-    au=s.get("admin_url") or (("https://%s:8443"%cm.host(s)) if s.get("public_url","").startswith("https") else ("http://%s:8003"%cm.host(s)))
+    au=s.get("admin_url") or ("https://%s:8443"%cm.host(s))
     try: np=len(json.loads(s.get("ext_presets") or "{}"))
     except Exception: np=0
     return T.TemplateResponse(r,"landing.html",{"s":s,"msg":msg,"admin_url":au,"n_clients":len(cs),"n_presets":np})
@@ -1715,7 +1849,7 @@ async def apr(m:Message):
 async def ast2(m:Message):
     if not adm(m.from_user.id): return
     s=S()
-    await m.answer(f"⚙️ 3x-ui: {s['xui_url']} (inbound {s['inbound_id']})\nДомен: {s.get('domain') or '—'}\nБиллинг: {'вкл' if s['billing_enabled']=='1' else 'выкл'}\nTLS-прокси: {'вкл' if cm.tlson(s) else 'выкл'}\nТарифов: {len(cm.plans())}")
+    await m.answer(f"⚙️ 3x-ui: {s['xui_url']} (inbound {s['inbound_id']})\nАдрес: {cm.host(s)}\nБиллинг: {'вкл' if s['billing_enabled']=='1' else 'выкл'}\nTLS-прокси: {'вкл' if cm.tlson(s) else 'выкл'}\nТарифов: {len(cm.plans())}")
 
 async def run(token):
     b=Bot(token); d=Dispatcher(); d.include_router(R)
@@ -1817,24 +1951,19 @@ def page(title,body,extra=""):
     return '<!doctype html><html lang=ru><head><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>'+title+'</title><style>'+CSS+extra+'</style></head><body>'+body+'</body></html>'
 
 (d/"login.html").write_text(page("Вход",'<form class=card method=post action=/login><h1 style="font-size:21px;margin-bottom:6px">🔐 Proxy Manager</h1><p class=hint style="margin-bottom:18px">Панель управления</p>{% if msg %}<div class=msg>{{ msg }}</div>{% endif %}<label>Логин</label><input name=username required style="margin-bottom:12px"><label>Пароль</label><input name=password type=password required style="margin-bottom:16px"><button class=btn style="width:100%">Войти</button></form>',' body{display:flex;min-height:100vh;align-items:center;justify-content:center;padding:20px}.card{width:min(380px,94vw)}'))
-
 (d/"lock.html").write_text(page("Вход",'<form class=card method=post action="/client/{{ c.tg_id }}/unlock"><div style="font-size:34px">🔐</div><h1 style="font-size:20px;margin:8px 0">{{ s.panel_name }}</h1><p class=hint style="margin-bottom:16px">Кабинет {{ c.name }} защищён кодовым словом</p>{% if msg %}<div class=msg>{{ msg }}</div>{% endif %}<input name=code placeholder="КОДОВОЕ СЛОВО" required autofocus style="margin-bottom:14px"><button class=btn style="width:100%">Войти</button></form>',' body{display:flex;min-height:100vh;align-items:center;justify-content:center;padding:20px}.card{width:min(380px,94vw)}input{text-align:center;letter-spacing:.15em;text-transform:uppercase;font-size:17px}'))
-
 (d/"register.html").write_text(page("Регистрация",'<main><div class=card><h1 style="font-size:22px;margin-bottom:6px">🛰️ {{ s.panel_name }}</h1><p class=hint style="margin-bottom:18px">Заявка на подключение</p>{% if msg %}<div class=msg>{{ msg }}</div>{% endif %}<form method=post action=/register><label>Имя *</label><input name=name required style="margin-bottom:12px"><label>Телефон *</label><input name=phone required placeholder="+7 900 123-45-67" style="margin-bottom:12px"><label>Email</label><input name=email style="margin-bottom:12px"><label>Комментарий</label><input name=comment style="margin-bottom:16px"><button class=btn style="width:100%">Отправить заявку</button></form><p class=hint>Администратор проверит контакты и одобрит заявку.</p></div></main>',' main{max-width:520px;margin:40px auto;padding:0 16px}'))
-
-(d/"reg_status.html").write_text(page("Заявка",'<main><div class=card><h1 style="font-size:20px;margin-bottom:10px">Заявка {{ reg.code }}</h1>{% if reg.status=="pending" %}<span class="badge off">⏳ На проверке</span><p class=hint>Администратор проверит телефон {{ reg.phone }}. Страница обновляется сама.</p>{% elif reg.status=="approved" %}<span class="badge on">✅ Одобрена</span>{% else %}<span class="badge off">❌ Отклонена</span>{% endif %}</div>{% if reg.status=="pending" %}<div class=card><h2>📲 Подтвердить Telegram</h2>{% if reg.tg_id %}<span class="badge on">✅ Подтверждён</span>{% else %}{% if tg_link %}<a class=btn href="{{ tg_link }}">Подтвердить Telegram</a>{% endif %}<p class=hint>Или отправьте боту <code>/reg {{ reg.code }}</code></p>{% endif %}</div>{% endif %}{% if reg.status=="approved" and client %}<div class=card><h2>🎉 Доступ готов</h2><p><a class="btn green" href="{{ cabinet }}">Открыть кабинет</a></p><p style="margin-top:12px">Кодовое слово: <code>{{ code_word }}</code></p><p style="margin-top:8px">Ключ расширения: <code>{{ client.ext_key }}</code></p><p style="margin-top:14px"><a class=btn href="/extension.zip">⬇ Расширение</a></p></div>{% endif %}</main>',' main{max-width:520px;margin:40px auto;padding:0 16px}{% if reg.status=="pending" %}'))
-
+(d/"reg_status.html").write_text(page("Заявка",'<main><div class=card><h1 style="font-size:20px;margin-bottom:10px">Заявка {{ reg.code }}</h1>{% if reg.status=="pending" %}<span class="badge off">⏳ На проверке</span><p class=hint>Администратор проверит телефон {{ reg.phone }}.</p>{% elif reg.status=="approved" %}<span class="badge on">✅ Одобрена</span>{% else %}<span class="badge off">❌ Отклонена</span>{% endif %}</div>{% if reg.status=="pending" %}<div class=card><h2>📲 Подтвердить Telegram</h2>{% if reg.tg_id %}<span class="badge on">✅ Подтверждён</span>{% else %}{% if tg_link %}<a class=btn href="{{ tg_link }}">Подтвердить Telegram</a>{% endif %}<p class=hint>Или отправьте боту <code>/reg {{ reg.code }}</code></p>{% endif %}</div>{% endif %}{% if reg.status=="approved" and client %}<div class=card><h2>🎉 Доступ готов</h2><p><a class="btn green" href="{{ cabinet }}">Открыть кабинет</a></p><p style="margin-top:12px">Кодовое слово: <code>{{ code_word }}</code></p><p style="margin-top:8px">Ключ расширения: <code>{{ client.ext_key }}</code></p><p style="margin-top:14px"><a class=btn href="/extension.zip">⬇ Расширение</a></p></div>{% endif %}</main>',' main{max-width:520px;margin:40px auto;padding:0 16px}'))
 (d/"client.html").write_text(page("Кабинет",'<main><div class=card><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px"><h1 style="font-size:21px">🛰️ {{ c.name }}</h1>{% if c.enabled %}<span class="badge on">● активен</span>{% else %}<span class="badge off">● отключён</span>{% endif %}</div>{% if msg %}<div class=msg style="margin-top:14px">{{ msg }}</div>{% endif %}<div class=grid style="margin-top:16px"><div class=stat><span>Баланс</span><b>{{ "%.2f"|format(c.balance) }} ₽</b></div><div class=stat><span>Тариф</span><b>{% set mp=get_plan(c.plan_id) %}{{ mp.name if mp else "—" }}</b></div><div class=stat><span>Трафик</span><b>{{ used_gb }} ГБ</b></div><div class=stat><span>Оплачено до</span><b>{{ paid_str }}</b></div></div>{% if c.limit_gb %}<p class=hint>Лимит {{ "%g"|format(c.limit_gb) }} ГБ · {{ percent }}%</p><div class=bar><i style="width:{{ percent }}%"></i></div>{% endif %}</div><div class=card><h2>💰 Тарифы</h2>{% for p in get_plans() %}<div class=plan><div><b>{{ p.name }}</b> — {{ "%g"|format(p.price) }} ₽ / {{ p.period_days }} дн.<div class=hint>{% if p.limit_gb %}{{ "%g"|format(p.limit_gb) }} ГБ{% else %}безлимит{% endif %}{% if p.description %} · {{ p.description }}{% endif %}</div></div><form method=post action="/client/{{ c.tg_id }}/plan/{{ p.id }}"><button class=btn>Подключить</button></form></div>{% else %}<p class=hint>Тарифы не настроены</p>{% endfor %}<div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap"><form method=post action="/client/{{ c.tg_id }}/promo" style="display:flex;gap:8px;flex:1"><input name=code placeholder="Промокод" style="flex:1;text-transform:uppercase"><button class="btn green">🎁</button></form><form method=post action="/client/{{ c.tg_id }}/topup"><button class="btn gray">💳 Пополнить</button></form></div></div>{% if has_plan(c) or s.require_plan!="1" %}<div class=card><h2>📱 Подключение — сканируйте QR</h2><div class=qrs><div class=qr><img src="{{ qr(vless) }}"><span>VLESS · v2rayNG / Hiddify</span></div><div class=qr><img src="{{ qr(sub) }}"><span>Подписка · автообновление</span></div></div><div class=linkbox><input id=v readonly value="{{ vless }}"><button class="btn gray" onclick="cp(\'v\',this)">Копировать</button></div><div class=linkbox><input id=su readonly value="{{ sub }}"><button class="btn gray" onclick="cp(\'su\',this)">Копировать</button></div></div>{% if c.http_port %}<div class=card><h2>🧩 Прокси для браузера</h2><p>Ключ: <code style="font-size:17px">{{ c.ext_key }}</code></p><p style="margin-top:14px"><a class=btn href="/extension.zip">⬇ Скачать расширение</a></p><p class=hint>chrome://extensions → режим разработчика → загрузить распакованное → ввести ключ.</p></div>{% endif %}{% else %}<div class=card style="text-align:center"><div style="font-size:42px">🔒</div><h2 style="margin-top:10px">Подключите тариф</h2><p class=hint>Ссылки, QR и ключ появятся после подключения тарифа.</p></div>{% endif %}<div class=card><h2>🔐 Кодовое слово</h2><p class=hint>Текущее: <code>{{ c.access_code or "защита отключена" }}</code></p><form method=post action="/client/{{ c.tg_id }}/setcode" style="display:flex;gap:8px;margin-top:10px"><input name=new placeholder="Новое слово" style="flex:1;text-transform:uppercase"><button class=btn>Сохранить</button></form></div></main><script>function cp(i,b){const e=document.getElementById(i);e.select();navigator.clipboard.writeText(e.value).then(()=>{const t=b.textContent;b.textContent="✓";setTimeout(()=>b.textContent=t,1200)})}</script>',' main{max-width:820px;margin:30px auto;padding:0 16px}.stat{background:rgba(255,255,255,.04);border:1px solid rgba(148,163,184,.16);border-radius:14px;padding:14px}.stat b{display:block;font-size:21px;margin-top:4px}.stat span{font-size:12px;color:#93a0b8}.linkbox{display:flex;gap:8px;margin-top:10px}.linkbox input{flex:1;font-family:ui-monospace,monospace;font-size:12px;color:#a5b4fc}.qrs{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px}.qr{background:#fff;border-radius:16px;padding:14px;text-align:center}.qr img{width:100%;max-width:180px}.qr span{display:block;color:#0f172a;font-size:12px;font-weight:600;margin-top:8px}.plan{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:13px;border:1px solid rgba(148,163,184,.16);border-radius:14px;margin-bottom:10px}'))
-
 (d/"landing.html").write_text(page("{{ s.panel_name }}",'<main><div class=hero><h1>Интернет <span class=grad>без границ</span></h1><p class=hint style="font-size:16px;max-width:560px;margin:0 auto">Защищённый доступ к любым сервисам. Один ключ — браузер, телефон и компьютер работают свободно.</p><div class=stats><div><b>{{ mstat("clients",n_clients) }}</b><span>{{ mstat("clients_label","пользователей") }}</span></div><div><b>{{ mstat("presets",n_presets) }}</b><span>{{ mstat("presets_label","сервисов") }}</span></div><div><b>{{ mstat("third","24/7") }}</b><span>{{ mstat("third_label","поддержка") }}</span></div></div></div>{% if msg %}<div class=msg id=login>{{ msg }}</div>{% else %}<div id=login></div>{% endif %}<div class=cards><div class="card ac" style="--ac:#22d3ee"><div class=ico>🔑</div><h2>Вход для клиентов</h2><p class=hint style="margin-bottom:14px">Введите ключ расширения или телефон</p><form method=post action=/login><input name=credential placeholder="Ключ или телефон" required style="margin-bottom:10px"><button class=btn style="width:100%">Войти в кабинет →</button></form></div><div class="card ac" style="--ac:#34d399"><div class=ico>✨</div><h2>Регистрация</h2><p class=hint style="margin-bottom:14px">Подайте заявку — администратор проверит и подключит</p><a class="btn green" style="width:100%;justify-content:center" href="/register">Подать заявку →</a></div><div class="card ac" style="--ac:#fbbf24"><div class=ico>🛡️</div><h2>Вход для админа</h2><p class=hint style="margin-bottom:14px">Клиенты, биллинг, тарифы, диагностика</p><a class=btn style="width:100%;justify-content:center;background:linear-gradient(90deg,#fbbf24,#f59e0b)" href="{{ admin_url }}">Открыть админку →</a></div></div><h2 style="text-align:center;margin:44px 0 20px;font-size:22px">Тарифы</h2><div class=fg>{% for p in get_plans() %}<div class=card><h3 style="font-size:17px">{{ p.name }}</h3><p style="font-size:26px;margin:8px 0">{{ "%g"|format(p.price) }} ₽ <span class=hint>/ {{ p.period_days }} дн.</span></p><p class=hint>{% if p.limit_gb %}{{ "%g"|format(p.limit_gb) }} ГБ{% else %}Безлимит{% endif %}{% if p.description %} · {{ p.description }}{% endif %}</p><a class="btn gray" style="margin-top:14px" href="/register">Подключить</a></div>{% endfor %}</div><div class=fg style="margin-top:24px"><div class=card><div style="font-size:26px">🛰️</div><h3 style="margin:8px 0">VLESS + Reality</h3><p class=hint>Устойчив к блокировкам</p></div><div class=card><div style="font-size:26px">🧩</div><h3 style="margin:8px 0">Расширение</h3><p class=hint>Один ключ для браузера</p></div><div class=card><div style="font-size:26px">🤖</div><h3 style="margin:8px 0">Telegram-бот</h3><p class=hint>Кабинет и уведомления</p></div><div class=card><div style="font-size:26px">🔒</div><h3 style="margin:8px 0">HTTPS</h3><p class=hint>Шифрование и сертификат</p></div></div><p class=hint style="text-align:center;margin-top:36px">© 2026 {{ s.panel_name }}</p></main>',' main{max-width:1080px;margin:0 auto;padding:40px 18px}.hero{text-align:center;padding:30px 0 40px}.hero h1{font-size:clamp(30px,5vw,50px);line-height:1.1;margin-bottom:14px}.grad{background:linear-gradient(90deg,#22d3ee,#3b82f6,#8b5cf6);-webkit-background-clip:text;background-clip:text;color:transparent}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:20px}.ac{position:relative;overflow:hidden}.ac::before{content:"";position:absolute;top:0;left:0;right:0;height:3px;background:var(--ac)}.ac .ico{font-size:30px;margin-bottom:12px}.stats{display:flex;gap:34px;justify-content:center;flex-wrap:wrap;margin-top:26px}.stats b{display:block;font-size:28px;background:linear-gradient(90deg,#22d3ee,#8b5cf6);-webkit-background-clip:text;background-clip:text;color:transparent}.stats span{font-size:13px;color:#93a0b8}.fg{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px}'))
 print("шаблоны клиента готовы")
 PY_TPL
 
 python3 - <<'PY_ADMTPL'
-import pathlib,re
+import pathlib
 css=pathlib.Path("templates/login.html").read_text().split("<style>")[1].split("</style>")[0].split(" body{display:flex")[0]
-extra='header{background:rgba(20,26,46,.85);backdrop-filter:blur(14px);border-bottom:1px solid rgba(148,163,184,.16);padding:14px 22px;display:flex;align-items:center;gap:14px;flex-wrap:wrap;position:sticky;top:0;z-index:5}header h1{font-size:17px;flex:1}main{max-width:1240px;margin:0 auto;padding:22px}.tabs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:18px}.tabs button{padding:10px 16px;border:1px solid rgba(148,163,184,.2);background:rgba(255,255,255,.04);color:#e7ecf5;border-radius:12px;cursor:pointer;font-size:14px;font-family:inherit}.tabs button.active{background:linear-gradient(90deg,#22d3ee,#3b82f6);color:#04121f;border-color:transparent;font-weight:600}.tab{display:none}.tab.active{display:block}.dot{width:10px;height:10px;border-radius:50%;display:inline-block;background:#64748b;margin-right:6px}.dot.ok{background:#34d399}.dot.bad{background:#f87171}#diagReport,#updOut,#prbOut{min-height:240px;white-space:pre}'
-tabs=[("clients","👥 Клиенты"),("plans","💰 Тарифы"),("settings","⚙️ Настройки"),("market","📣 Маркетинг"),("ext","🧩 Расширение"),("tools","🧰 Сервис"),("security","🔒 Безопасность"),("diag","🩺 Диагностика")]
+extra='header{background:rgba(20,26,46,.85);backdrop-filter:blur(14px);border-bottom:1px solid rgba(148,163,184,.16);padding:14px 22px;display:flex;align-items:center;gap:14px;flex-wrap:wrap;position:sticky;top:0;z-index:5}header h1{font-size:17px;flex:1}main{max-width:1240px;margin:0 auto;padding:22px}.tabs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:18px}.tabs button{padding:10px 16px;border:1px solid rgba(148,163,184,.2);background:rgba(255,255,255,.04);color:#e7ecf5;border-radius:12px;cursor:pointer;font-size:14px;font-family:inherit}.tabs button.active{background:linear-gradient(90deg,#22d3ee,#3b82f6);color:#04121f;border-color:transparent;font-weight:600}.tab{display:none}.tab.active{display:block}.dot{width:10px;height:10px;border-radius:50%;display:inline-block;background:#64748b;margin-right:6px}.dot.ok{background:#34d399}.dot.bad{background:#f87171}#diagReport,#updOut,#prbOut,#netOut,#certOut{min-height:200px;white-space:pre}'
+tabs=[("clients","👥 Клиенты"),("plans","💰 Тарифы"),("net","🌐 Домен и HTTPS"),("settings","⚙️ Настройки"),("market","📣 Маркетинг"),("ext","🧩 Расширение"),("tools","🧰 Сервис"),("security","🔒 Безопасность"),("diag","🩺 Диагностика")]
 H=['<!doctype html><html lang=ru><head><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>Админка</title><style>'+css+extra+'</style></head><body><header><h1>🛰️ {{ s.panel_name }}</h1><span id=xuiStatus style="font-size:13px;color:#93a0b8"><span class=dot id=xuiDot></span>3x-ui…</span><a href="/extension.zip">⬇ Расширение</a><a href="/logout">Выйти ({{ user }})</a></header><main>{% if msg %}<div class=msg>{{ msg }}</div>{% endif %}<div class=tabs>']
 for i,(k,t) in enumerate(tabs): H.append('<button data-tab="%s"%s>%s</button>'%(k,' class=active' if i==0 else '',t))
 H.append('</div>')
@@ -1895,6 +2024,30 @@ H.append('''<div class=tab id=tab-plans><div class=card><h2>Новый тари�
 {% for p in get_promos() %}<tr><td><code>{{ p.code }}</code></td><td>{{ p.kind }}</td><td>{{ "%g"|format(p.value) }}</td><td>{{ p.used_count }}/{{ p.max_uses or "∞" }}</td>
 <td>{% if p.enabled %}<span class="badge on">вкл</span>{% else %}<span class="badge off">выкл</span>{% endif %}</td>
 <td><div class=actions><form method=post action="/promos/{{ p.id }}/toggle"><button class="btn sm gray">⇄</button></form><form method=post action="/promos/{{ p.id }}/delete"><button class="btn sm red">✕</button></form></div></td></tr>{% else %}<tr><td colspan=6>Нет промокодов</td></tr>{% endfor %}</table></div></div></div>''')
+H.append('''<div class=tab id=tab-net>
+<div class=card><h2>🌐 Домен и сертификат</h2>
+<p class=hint>Сейчас сервер работает по IP: <b>{{ server_ip() }}</b>. Можно оставить как есть — всё функционирует.
+Когда купишь/настроишь домен: создай A-запись на этот IP, впиши домен ниже, нажми «Применить», затем «Запросить Let's Encrypt».</p>
+<p class=hint>Текущий сертификат: <code>{{ cert_path() }}</code></p>
+<form method=post action="/net/apply" style="margin-top:14px"><div class=grid>
+<div><label>Домен (пусто = работать по IP)</label><input name=domain value="{{ s.domain }}" placeholder="example.com"></div>
+<div><label>Email для Let's Encrypt (необязательно)</label><input name=le_email value="{{ s.le_email }}" placeholder="you@mail.ru"></div>
+<div><label>Свой сертификат fullchain.pem (необязательно)</label><input name=tls_cert value="{{ s.tls_cert }}" placeholder="/root/cert/домен/fullchain.pem"></div>
+<div><label>Свой ключ privkey.pem (необязательно)</label><input name=tls_key value="{{ s.tls_key }}" placeholder="/root/cert/домен/privkey.pem"></div>
+</div>
+<p style="margin-top:14px" class=actions>
+<button class=btn>💾 Применить и перенастроить</button>
+<button type=button class="btn gray" onclick=netSt()>Статус сети</button>
+</p></form>
+<div class=actions style="margin-top:10px">
+<form method=post action="/net/cert"><button class="btn green">🔒 Запросить Let's Encrypt</button></form>
+<button type=button class="btn gray" onclick=certSt()>Статус сертификата</button>
+</div>
+<p class=hint>После смены домена адрес админки изменится — смотри «Статус сети». Самоподписанный сертификат вызывает предупреждение браузера (это нормально до получения Let's Encrypt).</p>
+</div>
+<div class=card><h2>📄 Статус сети</h2><textarea id=netOut readonly placeholder="Нажми «Статус сети»"></textarea></div>
+<div class=card><h2>📄 Статус сертификата</h2><textarea id=certOut readonly placeholder="Нажми «Статус сертификата»"></textarea></div>
+</div>''')
 H.append('''<div class=tab id=tab-settings>
 <div class=card><h2>🪄 Автонастройка из 3x-ui</h2><p class=hint>Прочитает inbound и подставит порт, SNI, Reality pbk/sid, шифрование.</p>
 <form method=post action="/xui/autoconfig" class=actions style="margin-top:10px"><select name=inbound_id id=acInbound style="max-width:340px"><option value="">автовыбор</option></select><button class=btn>🔍 Подтянуть</button><button type=button class="btn gray" onclick=loadIb()>Обновить список</button></form></div>
@@ -1905,8 +2058,7 @@ H.append('''<div class=tab id=tab-settings>
 <div><label>Пароль</label><input name=xui_pass type=password value="{{ s.xui_pass }}"></div>
 <div><label>API-токен</label><input name=xui_api_token value="{{ s.xui_api_token }}"></div>
 <div><label>Inbound ID</label><input name=inbound_id value="{{ s.inbound_id }}"></div></div></div>
-<div class=card><h2>Ссылки</h2><div class=grid>
-<div><label>Домен</label><input name=domain value="{{ s.domain }}"></div>
+<div class=card><h2>Ссылки (адреса подставляются из вкладки «Домен и HTTPS»)</h2><div class=grid>
 <div><label>Публичный URL кабинета</label><input name=public_url value="{{ s.public_url }}"></div>
 <div><label>URL админки</label><input name=admin_url value="{{ s.admin_url }}"></div>
 <div><label>База подписки</label><input name=sub_url_base value="{{ s.sub_url_base }}"></div>
@@ -1926,8 +2078,7 @@ H.append('''<div class=tab id=tab-settings>
 <div><label>Порт от</label><input name=http_port_start value="{{ s.http_port_start }}"></div>
 <div><label>Порт до</label><input name=http_port_end value="{{ s.http_port_end }}"></div>
 <div><label>TLS</label><select name=proxy_tls><option value=1 {% if s.proxy_tls!="0" %}selected{% endif %}>вкл</option><option value=0 {% if s.proxy_tls=="0" %}selected{% endif %}>выкл</option></select></div>
-<div><label>Сертификат</label><input name=tls_cert value="{{ s.tls_cert }}" placeholder="авто"></div>
-<div><label>Ключ</label><input name=tls_key value="{{ s.tls_key }}" placeholder="авто"></div></div></div>
+</div></div>
 <button class=btn>💾 Сохранить</button></form></div>''')
 H.append('''<div class=tab id=tab-market><form method=post action="/settings">
 <div class=card><h2>📣 Цифры на главной</h2><p class=hint>Пусто = реальные данные.</p><div class=grid style="margin-top:12px">
@@ -1950,7 +2101,7 @@ H.append('''<div class=tab id=tab-ext><div class=card><h2>Расширение</
 <div class=card><h2>Предложения ({{ suggestions|length }})</h2>{% for g in suggestions %}<p><b>{{ g.name }}</b> <code>{{ g.domains[:100] }}</code>
 <span class=actions><form method=post action="/suggestions/{{ g.id }}/approve"><button class="btn sm green">Одобрить</button></form><form method=post action="/suggestions/{{ g.id }}/delete"><button class="btn sm red">✕</button></form></span></p>{% else %}<p class=hint>Нет</p>{% endfor %}</div></div>''')
 H.append('''<div class=tab id=tab-tools>
-<div class=card><h2>🔒 HTTPS-прокси</h2><p class=hint>Заворачивает браузерный прокси в TLS.</p>
+<div class=card><h2>🔒 HTTPS-прокси для расширения</h2><p class=hint>Заворачивает браузерный прокси в TLS.</p>
 <form method=post action="/proxy/tls_all" style="margin-top:10px"><button class="btn green">🔒 Перевести все прокси на TLS</button></form></div>
 <div class=card><h2>🛰️ Гостевой доступ</h2><p>Статус: {% if s.guest_enabled=="1" %}<span class="badge on">вкл</span>{% else %}<span class="badge off">выкл</span>{% endif %}</p>
 <div class=actions style="margin-top:10px"><form method=post action="/guest/toggle"><button class="btn sm {% if s.guest_enabled=='1' %}red{% else %}green{% endif %}">{% if s.guest_enabled=="1" %}Выключить{% else %}Включить{% endif %}</button></form>
@@ -1966,7 +2117,7 @@ H.append('''<div class=tab id=tab-security><div class=card><h2>Смена пар
 <div class=tab id=tab-diag><div class=card><h2>🩺 Диагностика</h2><div class=actions><button class=btn onclick=dg()>🔄 Собрать</button><button class="btn green" onclick=cpt(this)">📋 Копировать отчёт</button></div>
 <textarea id=diagReport readonly style="margin-top:14px" placeholder="Нажмите «Собрать»"></textarea></div></div>''')
 H.append('''</main><script>
-document.querySelectorAll('.tabs button').forEach(b=>b.onclick=()=>{document.querySelectorAll('.tabs button').forEach(x=>x.classList.remove('active'));document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));b.classList.add('active');document.getElementById('tab-'+b.dataset.tab).classList.add('active');localStorage.setItem('pm_tab',b.dataset.tab);if(b.dataset.tab==='diag')dg();});
+document.querySelectorAll('.tabs button').forEach(b=>b.onclick=()=>{document.querySelectorAll('.tabs button').forEach(x=>x.classList.remove('active'));document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));b.classList.add('active');document.getElementById('tab-'+b.dataset.tab).classList.add('active');localStorage.setItem('pm_tab',b.dataset.tab);if(b.dataset.tab==='diag')dg();if(b.dataset.tab==='net')netSt();});
 const sv=localStorage.getItem('pm_tab');if(sv){const b=document.querySelector('.tabs button[data-tab="'+sv+'"]');if(b)b.click();}
 async function poll(){const d=document.getElementById('xuiDot'),t=document.getElementById('xuiStatus');try{const j=await (await fetch('/api/xui_status')).json();d.className='dot '+(j.ok?'ok':'bad');t.innerHTML='';t.appendChild(d);t.append(j.ok?('3x-ui: '+j.xray+' CPU '+j.cpu+'%'):'3x-ui недоступен');}catch(e){d.className='dot bad';}}
 poll();setInterval(poll,20000);
@@ -1979,6 +2130,8 @@ async function dg(){const t=document.getElementById('diagReport');t.value='Со�
 function cpt(b){const t=document.getElementById('diagReport');if(!t.value)return;t.select();navigator.clipboard.writeText(t.value).then(()=>{const x=b.textContent;b.textContent='✅';setTimeout(()=>b.textContent=x,1500)});}
 async function upd(){document.getElementById('updOut').value=(await (await fetch('/update/status')).json()).text||'';}
 async function prb(){document.getElementById('prbOut').value=JSON.stringify(await (await fetch('/api/probe')).json(),null,1);}
+async function netSt(){const t=document.getElementById('netOut');if(!t)return;t.value=(await (await fetch('/net/status')).json()).text||'';}
+async function certSt(){const t=document.getElementById('certOut');if(!t)return;t.value=(await (await fetch('/net/certstatus')).json()).text||'';}
 </script></body></html>''')
 pathlib.Path("templates/admin.html").write_text("".join(H))
 print("admin.html готов")
@@ -2131,7 +2284,8 @@ CMDS={"disk":["df","-h"],"mem":["free","-m"],"ports":["ss","-tulnp"],
  "ps":["ps","-eo","pid,user,%cpu,%mem,etime,cmd","--sort=-%cpu"],
  "net":["ss","-tnp","state","established"],"uptime":["uptime"],
  "nginxtest":["nginx","-t"],"sshtest":["sshd","-t"],
- "certs":["bash","-c","for f in /root/cert/*/fullchain.pem /etc/letsencrypt/live/*/fullchain.pem; do [ -f \"$f\" ] && { echo \"$f\"; openssl x509 -in \"$f\" -noout -enddate; }; done"]}
+ "netsetup":["bash","/opt/proxy-manager/net-setup.sh"],
+ "certs":["bash","-c","for f in /root/cert/*/fullchain.pem /etc/letsencrypt/live/*/fullchain.pem /etc/pm-web/self.crt; do [ -f \"$f\" ] && { echo \"$f\"; openssl x509 -in \"$f\" -noout -enddate -subject; }; done"]}
 def run(a,t=30):
     try:
         r=subprocess.run(a,capture_output=True,text=True,timeout=t); return (r.stdout+r.stderr).strip() or "(пусто)"
@@ -2204,6 +2358,7 @@ python3 -m venv venv
 ./venv/bin/pip install -q "fastapi>=0.110" "uvicorn>=0.29" "aiogram>=3.7,<4" requests aiosqlite \
   "apscheduler>=3.10,<4" jinja2 python-multipart passlib "bcrypt==4.0.1" "pydantic>=2" qrcode pillow cryptography
 ./venv/bin/python -c "import common;common.init_db();print('БД ok')"
+./venv/bin/python -c "import common as cm; cm.setS({'domain':'$DOMAIN'}); print('Домен в БД:', '$DOMAIN' or '(по IP)')"
 for m in common xui_api admin_app web_app bot monitor; do
   ./venv/bin/python -c "import $m" 2>/dev/null && echo "  OK $m" || echo "  FAIL $m"
 done
@@ -2215,7 +2370,7 @@ web_app.T.env.get_template("landing.html").render(s=s,msg="",admin_url="x",n_cli
 print("шаблоны ok")
 CHK
 
-echo "=========== 9. systemd + nginx ==========="
+echo "=========== 9. systemd + сеть ==========="
 for pair in admin:8003 web:8002; do n=${pair%%:*}; p=${pair##*:}
 cat > /etc/systemd/system/proxy-$n.service <<U
 [Unit]
@@ -2245,30 +2400,12 @@ WantedBy=multi-user.target
 U
 done
 systemctl daemon-reload && systemctl enable proxy-admin proxy-web proxy-bot proxy-monitor >/dev/null 2>&1
-
-cat > /etc/nginx/sites-available/proxy-manager <<NG
-server { listen 80; server_name ${DOMAIN};
-  location /.well-known/acme-challenge/ { root /var/www/certbot; }
-  location / { return 301 https://\$host\$request_uri; } }
-server { listen 443 ssl; server_name ${DOMAIN};
-  ssl_certificate ${CERT}; ssl_certificate_key ${KEY}; ssl_protocols TLSv1.2 TLSv1.3;
-  location / { proxy_pass http://127.0.0.1:8002; proxy_set_header Host \$host;
-    proxy_set_header X-Real-IP \$remote_addr; proxy_set_header X-Forwarded-Proto https; } }
-server { listen 8443 ssl; server_name ${DOMAIN};
-  ssl_certificate ${CERT}; ssl_certificate_key ${KEY}; ssl_protocols TLSv1.2 TLSv1.3;
-  location / { proxy_pass http://127.0.0.1:8003; proxy_set_header Host \$host;
-    proxy_set_header X-Real-IP \$remote_addr; proxy_set_header X-Forwarded-Proto https; } }
-server { listen 2096 ssl; server_name ${DOMAIN};
-  ssl_certificate ${CERT}; ssl_certificate_key ${KEY}; ssl_protocols TLSv1.2 TLSv1.3;
-  location / { proxy_pass http://127.0.0.1:8002; proxy_set_header Host \$host;
-    proxy_set_header X-Forwarded-Proto https; } }
-NG
-ln -sf /etc/nginx/sites-available/proxy-manager /etc/nginx/sites-enabled/proxy-manager
-rm -f /etc/nginx/sites-enabled/acme /etc/nginx/sites-enabled/default
-nginx -t && systemctl reload nginx
-./venv/bin/python -c "import common;common.setS({'domain':'$DOMAIN','public_url':'https://$DOMAIN','admin_url':'https://$DOMAIN:8443','sub_url_base':'https://$DOMAIN:2096'})"
 systemctl restart proxy-admin proxy-web proxy-bot proxy-monitor
-sleep 5
+sleep 4
+bash "$APP/net-setup.sh"
+sleep 2
+
+BASE=$([ -n "$DOMAIN" ] && echo "$DOMAIN" || echo "$SRV_IP")
 GT=$(./venv/bin/python -c "import common;print(common.S()['guest_token'])")
 RT=$(cat /opt/rescue-agent/token 2>/dev/null)
 echo
@@ -2278,24 +2415,29 @@ curl -s -o /dev/null -w "admin local -> %{http_code}\n" http://127.0.0.1:8003/lo
 curl -s -o /dev/null -w "web   local -> %{http_code}\n" http://127.0.0.1:8002/
 cat <<SUM
 
- ✅ ВСЁ УСТАНОВЛЕНО
+ ✅ УСТАНОВЛЕНО (работа по ${BASE})
 ------------------------------------------------------------
- ВЕБ-ТЕРМИНАЛ  https://${DOMAIN}:2087   ${WU} / ${WP}
- ФАЙЛЫ         https://${DOMAIN}:2083   ${WU} / ${WP}
- ГЛАВНАЯ       https://${DOMAIN}/
- АДМИНКА       https://${DOMAIN}:8443   admin / admin (СМЕНИ!)
- ПОДПИСКИ      https://${DOMAIN}:2096/sub/<id>
- РЕЗЕРВ        https://${DOMAIN}:8444/${RT}/
+ ВЕБ-ТЕРМИНАЛ  https://${BASE}:2087   ${WU} / ${WP}
+ ФАЙЛЫ         https://${BASE}:2083   ${WU} / ${WP}
+ ГЛАВНАЯ       https://${BASE}/
+ АДМИНКА       https://${BASE}:8443   admin / admin (СМЕНИ!)
+ ПОДПИСКИ      https://${BASE}:2096/sub/<id>
+ РЕЗЕРВ        https://${BASE}:8444/${RT}/
 ------------------------------------------------------------
- Дальше (из веб-терминала или админки):
- 1) Админка → Настройки → 3x-ui: URL/логин/пароль → Сохранить → 🪄 Подтянуть
+ Сертификат самоподписанный — браузер предупредит.
+ Жми «Дополнительно → Перейти». Это нормально до Let's Encrypt.
+------------------------------------------------------------
+ ДАЛЬШЕ:
+ 1) Админка → ⚙️ Настройки → 3x-ui: URL/логин/пароль → Сохранить → 🪄 Подтянуть
  2) Настройки → Telegram: токен бота + свой TG ID
- 3) Сервис → 🔒 Перевести все прокси на TLS
- 4) Сервис → 🛰️ Гостевой доступ → Включить, ссылка:
-    https://${DOMAIN}/guest/${GT}
- 5) Клиенты → Добавить / Импорт
+ 3) 🌐 Домен и HTTPS — когда появится домен:
+    впиши домен → «Применить» → «Запросить Let's Encrypt»
+    (или укажи свои пути к сертификату)
+ 4) 🧰 Сервис → 🔒 Перевести все прокси на TLS
+ 5) 🧰 Сервис → 🛰️ Гостевой доступ → Включить, ссылка:
+    https://${BASE}/guest/${GT}
 ------------------------------------------------------------
  Пароли веб-доступа: /etc/pm-web/cred
- Логи: journalctl -u proxy-admin -n 50 --no-pager
+ Перенастроить сеть вручную: bash $APP/net-setup.sh
 ============================================================
 SUM
