@@ -1,73 +1,128 @@
 #!/usr/bin/env bash
-# ==============================================
-#  telnet.sh — авторазвёртывание Telnet-сервера (Ubuntu/Debian)
-#  Запуск:      curl -sL <URL> | bash
-#  Свой порт:   TELNET_PORT=2323 curl -sL <URL> | bash
-# ==============================================
-set -u
-PORT="${TELNET_PORT:-23}"
-ok(){ echo -e "\033[32m[OK]\033[0m $1"; }
-err(){ echo -e "\033[31m[FAIL]\033[0m $1"; }
+# Веб-терминал + файловый менеджер на HTTPS. SSH не нужен.
+set -euo pipefail
+DOMAIN="${DOMAIN:-vps.ddns.net}"
+WU="${WU:-admin}"
+WP="${WP:-$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 16)}"
+[ "$(id -u)" = 0 ] || { echo "нужен root"; exit 1; }
 
-echo "== [1/6] Проверка прав =="
-[ "$(id -u)" = 0 ] || { err "Запусти под root"; exit 1; }
-ok "root есть"
+echo "==> пакеты"
+apt-get update -y
+DEBIAN_FRONTEND=noninteractive apt-get install -y nginx certbot curl git python3 openssl ca-certificates ufw
 
-echo "== [2/6] Установка пакетов =="
-export DEBIAN_FRONTEND=noninteractive
-apt-get update -qq >/dev/null 2>&1
-apt-get install -y -qq telnetd openbsd-inetd >/dev/null 2>&1 \
-  || { err "apt не смог поставить пакеты — проверь исходящую сеть"; exit 1; }
-ok "telnetd + openbsd-inetd установлены"
-
-echo "== [3/6] Настройка inetd =="
-BIN=""
-for b in /usr/sbin/in.telnetd /usr/sbin/telnetd; do [ -x "$b" ] && BIN="$b"; done
-[ -n "$BIN" ] || { err "Бинарник telnetd не найден"; exit 1; }
-# Удаляем старые/битые строки telnet и пишем одну правильную (идемпотентно)
-sed -i -e '/^[[:space:]]*#*[[:space:]]*telnet[[:space:]]/d' -e '/in\.telnetd/d' /etc/inetd.conf
-printf '%s\tstream\ttcp\tnowait\troot\t%s\tin.telnetd\n' "$PORT" "$BIN" >> /etc/inetd.conf
-ok "конфиг записан (порт $PORT, бинарник $BIN)"
-
-echo "== [4/6] Запуск службы =="
-systemctl enable openbsd-inetd >/dev/null 2>&1
-systemctl restart openbsd-inetd
-sleep 1
-
-echo "== [5/6] Файрвол =="
-if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
-  ufw allow "$PORT/tcp" >/dev/null && ok "ufw: порт $PORT открыт"
-else
-  ok "ufw не активен — пропускаю"
+echo "==> веб-терминал ttyd"
+if ! command -v ttyd >/dev/null 2>&1; then
+  curl -fsSL -o /usr/local/bin/ttyd \
+    https://github.com/tsl0922/ttyd/releases/latest/download/ttyd.x86_64
+  chmod +x /usr/local/bin/ttyd
 fi
 
-echo "== [6/6] Проверка порта =="
-if ss -tln | grep -q ":$PORT "; then
-  ok "Порт $PORT СЛУШАЕТСЯ — telnet поднят"
-  echo "Подключение: telnet <IP> $PORT  (или PuTTY: тип Telnet, порт $PORT)"
-else
-  err "Порт $PORT не слушается. Включаю фолбэк через xinetd..."
-  apt-get install -y -qq xinetd >/dev/null 2>&1
-  cat > /etc/xinetd.d/telnet <<EOF
-service telnet
-{
-    disable     = no
-    socket_type = stream
-    wait        = no
-    user        = root
-    server      = $BIN
-    port        = $PORT
+echo "==> файловый менеджер filebrowser"
+if ! command -v filebrowser >/dev/null 2>&1; then
+  curl -fsSL https://raw.githubusercontent.com/filebrowser/get/master/get.sh | bash
+fi
+
+mkdir -p /etc/pm-web /var/www/certbot
+printf '%s\n' "$WU" "$WP" > /etc/pm-web/cred; chmod 600 /etc/pm-web/cred
+
+echo "==> сертификат"
+cat > /etc/nginx/sites-available/acme <<NG
+server { listen 80; server_name ${DOMAIN};
+  location /.well-known/acme-challenge/ { root /var/www/certbot; }
+  location / { return 200 "ok"; } }
+NG
+ln -sf /etc/nginx/sites-available/acme /etc/nginx/sites-enabled/acme
+rm -f /etc/nginx/sites-enabled/default
+nginx -t && systemctl enable --now nginx && systemctl restart nginx
+
+CERT="/etc/letsencrypt/live/${DOMAIN}/fullchain.pem"
+KEY="/etc/letsencrypt/live/${DOMAIN}/privkey.pem"
+if [ ! -f "$CERT" ]; then
+  certbot certonly --webroot -w /var/www/certbot -d "$DOMAIN" --non-interactive \
+    --agree-tos --register-unsafely-without-email --deploy-hook "systemctl reload nginx" || true
+fi
+if [ ! -f "$CERT" ]; then
+  echo "!!! Let's Encrypt не выдался — делаю самоподписанный (браузер ругнётся, но работает)"
+  openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+    -keyout /etc/pm-web/self.key -out /etc/pm-web/self.crt -subj "/CN=${DOMAIN}"
+  CERT=/etc/pm-web/self.crt; KEY=/etc/pm-web/self.key
+fi
+
+echo "==> сервисы"
+cat > /etc/systemd/system/web-term.service <<U
+[Unit]
+Description=Web Terminal (ttyd)
+After=network-online.target
+[Service]
+ExecStart=/usr/local/bin/ttyd -W -i 127.0.0.1 -p 7681 -c ${WU}:${WP} /bin/bash
+Restart=always
+RestartSec=3
+[Install]
+WantedBy=multi-user.target
+U
+
+filebrowser config init -d /etc/pm-web/fb.db >/dev/null 2>&1 || true
+filebrowser users add "$WU" "$WP" --perm.admin -d /etc/pm-web/fb.db >/dev/null 2>&1 \
+  || filebrowser users update "$WU" -p "$WP" -d /etc/pm-web/fb.db >/dev/null 2>&1 || true
+
+cat > /etc/systemd/system/web-files.service <<U
+[Unit]
+Description=Web File Manager (filebrowser)
+After=network-online.target
+[Service]
+ExecStart=/usr/local/bin/filebrowser -r / -a 127.0.0.1 -p 8080 -d /etc/pm-web/fb.db
+Restart=always
+RestartSec=3
+[Install]
+WantedBy=multi-user.target
+U
+
+systemctl daemon-reload
+systemctl enable --now web-term web-files
+
+echo "==> nginx: 2087 терминал, 2083 файлы"
+cat > /etc/nginx/conf.d/pm-web.conf <<NG
+server {
+  listen 2087 ssl;
+  server_name ${DOMAIN};
+  ssl_certificate ${CERT};
+  ssl_certificate_key ${KEY};
+  ssl_protocols TLSv1.2 TLSv1.3;
+  location / {
+    proxy_pass http://127.0.0.1:7681;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade \$http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_set_header Host \$host;
+    proxy_read_timeout 86400;
+    proxy_send_timeout 86400;
+  }
 }
-EOF
-  systemctl disable openbsd-inetd >/dev/null 2>&1
-  systemctl restart xinetd
-  sleep 1
-  if ss -tln | grep -q ":$PORT "; then
-    ok "xinetd поднял порт $PORT — telnet работает"
-  else
-    err "Всё равно не слушается. Диагноз:"
-    journalctl -u openbsd-inetd -u xinetd -n 20 --no-pager
-    exit 1
-  fi
-fi
-echo "== Готово =="
+server {
+  listen 2083 ssl;
+  server_name ${DOMAIN};
+  ssl_certificate ${CERT};
+  ssl_certificate_key ${KEY};
+  ssl_protocols TLSv1.2 TLSv1.3;
+  client_max_body_size 4096m;
+  location / {
+    proxy_pass http://127.0.0.1:8080;
+    proxy_set_header Host \$host;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_read_timeout 3600;
+  }
+}
+NG
+nginx -t && systemctl reload nginx
+command -v ufw >/dev/null && { ufw allow 2087/tcp; ufw allow 2083/tcp; ufw allow 443/tcp; ufw allow 80/tcp; } || true
+
+sleep 2
+echo
+echo "============================================================"
+echo " ВЕБ-ТЕРМИНАЛ:  https://${DOMAIN}:2087"
+echo " ФАЙЛЫ:         https://${DOMAIN}:2083"
+echo " Логин: ${WU}"
+echo " Пароль: ${WP}"
+echo "============================================================"
+echo "Пароль также в /etc/pm-web/cred"
+systemctl is-active web-term web-files nginx
