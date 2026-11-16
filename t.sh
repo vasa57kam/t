@@ -1809,3 +1809,722 @@ if __name__=="__main__":
     except KeyboardInterrupt: pass
 PY_MON
 echo "модули записаны"
+cat >> t.sh <<'PART2'
+echo "=========== 5. Шаблоны ==========="
+python3 - <<'PY_TPL'
+import pathlib
+d=pathlib.Path("templates"); d.mkdir(exist_ok=True)
+CSS='''*{box-sizing:border-box;margin:0}body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;background:#f6f8fb;color:#101828;line-height:1.6}
+a{color:#0f62fe;text-decoration:none}.wrap{max-width:1140px;margin:0 auto;padding:0 22px}
+.card{background:#fff;border:1px solid #e4e9f0;border-radius:14px;padding:26px;margin-bottom:16px}
+h1{font-size:26px;letter-spacing:-.02em;margin-bottom:10px}h2{font-size:17px;margin-bottom:12px}
+label{display:block;font-size:12.5px;color:#5b6b82;margin:12px 0 5px}
+input,select,textarea{width:100%;padding:11px 13px;border:1px solid #e4e9f0;border-radius:9px;font-size:15px;font-family:inherit;background:#fff;color:#101828}
+input:focus,select:focus,textarea:focus{outline:none;border-color:#0f62fe}
+textarea{min-height:88px}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:7px;padding:11px 20px;border-radius:9px;border:1px solid transparent;background:#0f62fe;color:#fff;font-size:14.5px;font-weight:600;cursor:pointer;font-family:inherit}
+.btn:hover{background:#0b52d6}.btn.o{background:#fff;border-color:#e4e9f0;color:#101828}.btn.g{background:#00867d}.btn.r{background:#c62828}
+.btn.sm{padding:6px 11px;font-size:12.5px}
+.msg{background:#e7f3ff;border:1px solid #b9dbff;color:#0b4ea2;border-radius:10px;padding:12px 16px;margin-bottom:16px;font-size:14.5px}
+.hint{font-size:12.5px;color:#5b6b82;margin-top:8px}
+code{background:#f2f5f9;border:1px solid #e4e9f0;border-radius:6px;padding:2px 7px;font-size:12.5px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}
+table{width:100%;border-collapse:collapse;font-size:13.5px}th,td{padding:9px 8px;border-bottom:1px solid #e4e9f0;text-align:left;vertical-align:top}th{color:#5b6b82;font-size:12.5px}
+.badge{padding:3px 10px;border-radius:99px;font-size:11.5px;font-weight:600}.badge.on{background:#dff5ec;color:#00614f}.badge.off{background:#fdeaea;color:#a12626}
+'''
+def page(t,b,e=""):
+    return '<!doctype html><html lang=ru><head><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>'+t+'</title><style>'+CSS+e+'</style></head><body>'+b+'</body></html>'
+(d/"login.html").write_text(page("Вход",'<form class=card method=post action=/login style="width:min(380px,94vw)"><h1>Панель управления</h1>{% if msg %}<div class=msg>{{ msg }}</div>{% endif %}<label>Логин</label><input name=username required><label>Пароль</label><input name=password type=password required><p style="margin-top:18px"><button class=btn style="width:100%">Войти</button></p></form>',' body{display:flex;min-height:100vh;align-items:center;justify-content:center;padding:20px}'))
+(d/"cabinet_login.html").write_text(page("Личный кабинет",'<form class=card method=post action=/login style="width:min(400px,94vw)"><h1>{{ s.site_name }}</h1><p class=hint style="margin-bottom:16px">Вход для действующих клиентов. Код доступа выдаётся при подключении обслуживания.</p>{% if msg %}<div class=msg>{{ msg }}</div>{% endif %}<label>Код доступа или телефон</label><input name=credential required placeholder="A1B2C3D4"><p style="margin-top:18px"><button class=btn style="width:100%">Войти</button></p><p class=hint style="text-align:center;margin-top:14px"><a href="/">← На главную</a></p></form>',' body{display:flex;min-height:100vh;align-items:center;justify-content:center;padding:20px}'))
+(d/"lock.html").write_text(page("Вход",'<form class=card method=post action="/client/{{ c.tg_id }}/unlock" style="width:min(380px,94vw)"><h1>{{ s.site_name }}</h1><p class=hint style="margin-bottom:16px">Кабинет {{ c.name }} защищён кодовым словом</p>{% if msg %}<div class=msg>{{ msg }}</div>{% endif %}<input name=code required autofocus placeholder="КОДОВОЕ СЛОВО" style="text-align:center;letter-spacing:.15em;text-transform:uppercase;font-size:17px"><p style="margin-top:16px"><button class=btn style="width:100%">Войти</button></p></form>',' body{display:flex;min-height:100vh;align-items:center;justify-content:center;padding:20px}'))
+(d/"privacy.html").write_text(page("Обработка данных",'<div class=wrap style="max-width:760px;padding:44px 22px"><p><a href="/">← На главную</a></p><h1 style="margin-top:18px">Обработка персональных данных</h1><p>{{ s.site_name }} обрабатывает данные, переданные через форму заявки.</p><h2 style="margin-top:24px">Какие данные</h2><p>Имя, телефон, электронная почта (если указана), текст обращения.</p><h2 style="margin-top:20px">Зачем</h2><p>Связаться по заявке, подготовить предложение, исполнять договор обслуживания.</p><h2 style="margin-top:20px">Хранение</h2><p>Данные хранятся на серверах компании, третьим лицам не передаются, кроме случаев по закону. Хранятся до отзыва согласия или завершения договора.</p><h2 style="margin-top:20px">Отзыв</h2><p>Напишите на {% if s.site_email %}<a href="mailto:{{ s.site_email }}">{{ s.site_email }}</a>{% else %}контактный адрес с сайта{% endif %} — данные удалим.</p><h2 style="margin-top:20px">Cookie</h2><p>Только технические cookie для работы кабинета. Рекламных трекеров нет.</p><p class=hint style="margin-top:26px">Редакция от 01.01.2026{% if s.site_inn %} · ИНН {{ s.site_inn }}{% endif %}</p></div>'))
+(d/"client.html").write_text(page("Кабинет",'<div class=wrap style="max-width:860px;padding:32px 22px"><h1>{{ c.name }}</h1><p class=hint>{% if c.enabled %}<span class="badge on">активен</span>{% else %}<span class="badge off">отключён</span>{% endif %} · шифрование прокси: {% if tls %}<span class="badge on">TLS</span>{% else %}<span class="badge off">HTTP</span>{% endif %}</p>{% if msg %}<div class=msg style="margin-top:14px">{{ msg }}</div>{% endif %}<div class=card style="margin-top:16px"><div class=grid><div><span class=hint>Баланс</span><h2>{{ "%.2f"|format(c.balance) }} ₽</h2></div><div><span class=hint>Тариф</span><h2>{% set mp=get_plan(c.plan_id) %}{{ mp.name if mp else "—" }}</h2></div><div><span class=hint>Трафик</span><h2>{{ used_gb }} ГБ</h2></div><div><span class=hint>Оплачено до</span><h2>{{ paid_str }}</h2></div></div>{% if c.limit_gb %}<p class=hint>Лимит {{ "%g"|format(c.limit_gb) }} ГБ · {{ percent }}%</p>{% endif %}</div><div class=card><h2>Тарифы</h2>{% for p in get_plans() %}<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid #e4e9f0"><div><b>{{ p.name }}</b> — {{ "%g"|format(p.price) }} ₽ / {{ p.period_days }} дн.<div class=hint>{% if p.limit_gb %}{{ "%g"|format(p.limit_gb) }} ГБ{% else %}безлимит{% endif %}{% if p.description %} · {{ p.description }}{% endif %}</div></div><form method=post action="/client/{{ c.tg_id }}/plan/{{ p.id }}"><button class="btn sm">Подключить</button></form></div>{% else %}<p class=hint>Тарифы не настроены</p>{% endfor %}<div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap"><form method=post action="/client/{{ c.tg_id }}/promo" style="display:flex;gap:8px;flex:1"><input name=code placeholder="Промокод" style="flex:1;text-transform:uppercase"><button class="btn g">Применить</button></form><form method=post action="/client/{{ c.tg_id }}/topup"><button class="btn o">Пополнить</button></form></div></div>{% if has_plan(c) or s.require_plan!="1" %}<div class=card><h2>Подключение — сканируйте QR</h2><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px"><div style="text-align:center"><img src="{{ qr(vless) }}" style="width:100%;max-width:190px"><div class=hint>VLESS · v2rayNG / Hiddify</div></div><div style="text-align:center"><img src="{{ qr(sub) }}" style="width:100%;max-width:190px"><div class=hint>Подписка · автообновление</div></div></div><label>VLESS ссылка</label><input id=v readonly value="{{ vless }}"><label>Подписка</label><input id=su readonly value="{{ sub }}"><p style="margin-top:12px"><button class="btn o" onclick="cp(\'v\')">Копировать VLESS</button> <button class="btn o" onclick="cp(\'su\')">Копировать подписку</button></p></div>{% if c.http_port %}<div class=card><h2>Расширение для браузера</h2><p>Код доступа: <code style="font-size:17px">{{ c.ext_key }}</code></p><p style="margin-top:14px"><a class=btn href="/extension.zip">Скачать расширение</a></p><p class=hint>chrome://extensions → режим разработчика → «Загрузить распакованное» → ввести код. {% if tls %}Канал шифруется TLS.{% else %}Шифрование включится после получения валидного сертификата.{% endif %}</p></div>{% endif %}{% else %}<div class=card style="text-align:center"><h2>Подключите тариф</h2><p class=hint>Ссылки, QR и код расширения появятся после подключения тарифа.</p></div>{% endif %}<div class=card><h2>Кодовое слово</h2><p class=hint>Текущее: <code>{{ c.access_code or "защита отключена" }}</code></p><form method=post action="/client/{{ c.tg_id }}/setcode" style="display:flex;gap:8px;margin-top:10px"><input name=new placeholder="Новое слово" style="flex:1;text-transform:uppercase"><button class=btn>Сохранить</button></form></div></div><script>function cp(i){const e=document.getElementById(i);e.select();navigator.clipboard.writeText(e.value)}</script>'))
+(d/"landing.html").write_text('''<!doctype html><html lang=ru><head><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
+<title>{{ s.site_name }} — {{ s.site_tagline }}</title>
+<meta name=description content="Проектирование, размещение и техническое сопровождение серверов и веб-сервисов для малого и среднего бизнеса.">
+<style>'''+CSS+'''
+header{position:sticky;top:0;z-index:50;background:rgba(255,255,255,.94);backdrop-filter:blur(10px);border-bottom:1px solid #e4e9f0}
+.nav{display:flex;align-items:center;gap:24px;height:66px}
+.brand{display:flex;align-items:center;gap:10px;font-weight:700;font-size:17.5px;color:#101828}
+.mark{width:29px;height:29px;border-radius:8px;background:linear-gradient(135deg,#0f62fe,#00867d);display:grid;place-items:center;color:#fff;font-size:14px;font-weight:700}
+.nav nav{display:flex;gap:22px;margin-left:auto}.nav nav a{font-size:14.5px;color:#5b6b82}.nav nav a:hover{color:#101828}
+.hero{padding:70px 0 58px;background:linear-gradient(180deg,#f8fafc,#fff)}
+.hg{display:grid;grid-template-columns:1.1fr .9fr;gap:48px;align-items:center}
+.hero h1{font-size:clamp(29px,4.3vw,44px);line-height:1.15;margin-bottom:16px}
+.lead{font-size:17px;color:#5b6b82;max-width:540px;margin-bottom:26px}
+.panel{background:#0b1524;border-radius:15px;padding:22px;color:#dbe6f5;font-size:13px;font-family:ui-monospace,Menlo,monospace;box-shadow:0 22px 54px rgba(11,21,36,.2)}
+.panel .row{display:flex;justify-content:space-between;padding:7px 0;border-bottom:1px solid rgba(255,255,255,.07)}.panel .row:last-child{border:0}
+.panel h4{font-family:inherit;font-size:11.5px;text-transform:uppercase;letter-spacing:.08em;color:#7d93b0;margin-bottom:11px}
+.ok{color:#4ade80}.warn{color:#fbbf24}
+.trust{border-top:1px solid #e4e9f0;border-bottom:1px solid #e4e9f0;background:#f6f8fb}
+.ti{display:grid;grid-template-columns:repeat(4,1fr);gap:18px;padding:28px 0;text-align:center}
+.ti b{display:block;font-size:28px;font-weight:700}.ti span{font-size:13.5px;color:#5b6b82}
+section{padding:68px 0}.eyebrow{font-size:12px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:#0f62fe;margin-bottom:11px}
+h2.big{font-size:clamp(23px,3vw,32px);letter-spacing:-.02em;margin-bottom:12px}
+.sub{color:#5b6b82;font-size:16px;max-width:640px;margin-bottom:36px}
+.g3{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
+.scard{border:1px solid #e4e9f0;border-radius:14px;padding:24px;background:#fff}
+.scard:hover{border-color:#cfd9e6;box-shadow:0 10px 28px rgba(16,24,40,.06)}
+.ico{width:40px;height:40px;border-radius:10px;background:#f2f5f9;display:grid;place-items:center;font-size:19px;margin-bottom:14px}
+.scard h3{font-size:16.5px;margin-bottom:8px}.scard p{color:#5b6b82;font-size:14.5px}
+.soft{background:#f6f8fb}
+.price{display:flex;flex-direction:column;border:1px solid #e4e9f0;border-radius:14px;padding:26px;background:#fff}
+.price.hi{border-color:#0f62fe;box-shadow:0 12px 32px rgba(15,98,254,.1)}
+.price .tag{font-size:11.5px;font-weight:700;color:#0f62fe;text-transform:uppercase;letter-spacing:.06em;margin-bottom:9px}
+.price .num{font-size:29px;font-weight:700;margin:5px 0 3px}.price .per{color:#5b6b82;font-size:13.5px;margin-bottom:16px}
+.price ul{list-style:none;margin-bottom:20px;flex:1}.price li{font-size:14.5px;color:#5b6b82;padding:6px 0 6px 22px;position:relative}
+.price li::before{content:"✓";position:absolute;left:0;color:#00867d;font-weight:700}
+.steps{display:grid;grid-template-columns:repeat(4,1fr);gap:18px;counter-reset:s}
+.step{padding:22px;border-radius:14px;background:#fff;border:1px solid #e4e9f0}
+.step::before{counter-increment:s;content:"0" counter(s);display:block;font-size:25px;font-weight:700;color:#0f62fe;margin-bottom:9px}
+.step h4{font-size:15.5px;margin-bottom:6px}.step p{font-size:14px;color:#5b6b82}
+.about{display:grid;grid-template-columns:1fr 1fr;gap:44px}
+.about ul{list-style:none;margin-top:16px}.about li{padding:8px 0 8px 24px;position:relative;color:#5b6b82;font-size:15px}
+.about li::before{content:"—";position:absolute;left:0;color:#0f62fe}
+.contact{background:#0b1524;color:#e8eff8;border-radius:17px;padding:40px;display:grid;grid-template-columns:1fr 1fr;gap:40px}
+.contact h2{color:#fff;font-size:26px;margin-bottom:10px}.contact p{color:#9db1cb;font-size:15.5px}
+.contact label{color:#9db1cb}.contact input,.contact textarea{background:rgba(255,255,255,.06);border-color:rgba(255,255,255,.16);color:#fff}
+.meta{margin-top:22px;font-size:14px;color:#9db1cb}.meta div{padding:4px 0}
+footer{border-top:1px solid #e4e9f0;padding:34px 0;background:#f6f8fb}
+.foot{display:flex;justify-content:space-between;gap:24px;flex-wrap:wrap;font-size:14px;color:#5b6b82}
+.foot .col{display:flex;flex-direction:column;gap:6px}.foot a{color:#5b6b82}.foot a:hover{color:#101828}
+@media(max-width:940px){.hg,.about,.contact{grid-template-columns:1fr}.g3,.steps,.ti{grid-template-columns:1fr 1fr}.nav nav{display:none}.contact{padding:26px}}
+@media(max-width:560px){.g3,.steps,.ti{grid-template-columns:1fr}}
+</style></head><body>
+<header><div class="wrap nav"><a class=brand href="/"><span class=mark>И</span>{{ s.site_name }}</a>
+<nav><a href="#services">Услуги</a><a href="#pricing">Тарифы</a><a href="#process">Как работаем</a><a href="#about">О компании</a><a href="#contact">Контакты</a></nav>
+<a class="btn o" href="/login">Личный кабинет</a></div></header>
+{% if msg %}<div class=wrap style="padding-top:16px"><div class=msg>{{ msg }}</div></div>{% endif %}
+<div class=hero><div class="wrap hg"><div>
+<h1>IT-инфраструктура,<br>которая просто работает</h1>
+<p class=lead>{{ s.site_tagline }}</p>
+<p><a class=btn href="#contact">Обсудить проект</a> <a class="btn o" href="#services">Наши услуги</a></p>
+</div><div class=panel><h4>Мониторинг узлов · сводка</h4>
+<div class=row><span>web-01 · nginx</span><span class=ok>healthy</span></div>
+<div class=row><span>db-01 · postgres</span><span class=ok>healthy</span></div>
+<div class=row><span>backup · daily</span><span class=ok>02:15 ok</span></div>
+<div class=row><span>app-02 · worker</span><span class=warn>load 71%</span></div>
+<div class=row><span>uptime 30d</span><span>{{ s.site_uptime }}%</span></div>
+<div class=row><span>reaction SLA</span><span>&lt; 15 min</span></div></div></div></div>
+<div class=trust><div class="wrap ti">
+<div><b>{{ s.site_years }}</b><span>лет на рынке</span></div>
+<div><b>{{ s.site_projects }}+</b><span>проектов</span></div>
+<div><b>{{ s.site_uptime }}%</b><span>доступность</span></div>
+<div><b>24/7</b><span>дежурная смена</span></div></div></div>
+<section id=services><div class=wrap><div class=eyebrow>Услуги</div><h2 class=big>Что мы делаем</h2>
+<p class=sub>Полный цикл: от проектирования архитектуры до ежедневной эксплуатации и развития.</p>
+<div class=g3>
+<div class=scard><div class=ico>🖥️</div><h3>Размещение и серверы</h3><p>Подбор конфигурации, настройка окружения, миграция проектов, резервное копирование и восстановление.</p></div>
+<div class=scard><div class=ico>🧩</div><h3>Разработка веб-сервисов</h3><p>Корпоративные сайты, внутренние порталы, личные кабинеты, интеграции с CRM и учётными системами.</p></div>
+<div class=scard><div class=ico>🛠️</div><h3>Техническая поддержка</h3><p>Дежурная смена, реакция по SLA, обновления, устранение инцидентов, ежемесячная отчётность.</p></div>
+<div class=scard><div class=ico>📊</div><h3>Мониторинг и отчётность</h3><p>Метрики доступности и нагрузки, оповещения, понятные дашборды для руководителя и техспециалиста.</p></div>
+<div class=scard><div class=ico>🔐</div><h3>Аудит и безопасность</h3><p>Проверка конфигураций, разграничение доступа, обновления, резервные копии, план восстановления.</p></div>
+<div class=scard><div class=ico>⚙️</div><h3>Автоматизация</h3><p>Скрипты обслуживания, CI/CD, автоматические бэкапы, синхронизация данных между системами.</p></div>
+</div></div></section>
+<section id=pricing class=soft><div class=wrap><div class=eyebrow>Тарифы</div><h2 class=big>Сопровождение</h2>
+<p class=sub>Фиксированная стоимость в месяц, без скрытых платежей. Разработка и миграция оцениваются отдельно.</p>
+<div class=g3>
+<div class=price><div class=tag>Базовый</div><div class=num>4 900 ₽</div><div class=per>в месяц</div>
+<ul><li>Мониторинг доступности</li><li>Обновления раз в месяц</li><li>Резервные копии</li><li>Реакция до 8 часов</li></ul><a class="btn o" href="#contact">Оставить заявку</a></div>
+<div class="price hi"><div class=tag>Бизнес</div><div class=num>12 400 ₽</div><div class=per>в месяц</div>
+<ul><li>Всё из «Базового»</li><li>Дежурная смена 24/7</li><li>Реакция до 30 минут</li><li>До 4 часов работ в месяц</li><li>Ежемесячный отчёт</li></ul><a class=btn href="#contact">Оставить заявку</a></div>
+<div class=price><div class=tag>Проектный</div><div class=num>по смете</div><div class=per>разовые работы</div>
+<ul><li>Аудит инфраструктуры</li><li>Миграция и перенос данных</li><li>Разработка и интеграции</li><li>Обучение сотрудников</li></ul><a class="btn o" href="#contact">Обсудить задачу</a></div>
+</div></div></section>
+<section id=process><div class=wrap><div class=eyebrow>Процесс</div><h2 class=big>Как мы работаем</h2>
+<p class=sub>Прозрачные этапы и понятная зона ответственности.</p>
+<div class=steps>
+<div class=step><h4>Заявка</h4><p>Вы описываете задачу. Мы связываемся в рабочее время и уточняем детали.</p></div>
+<div class=step><h4>Аудит</h4><p>Смотрим текущее состояние, фиксируем риски и составляем план работ.</p></div>
+<div class=step><h4>Внедрение</h4><p>Выполняем работы по согласованной смете, передаём документацию.</p></div>
+<div class=step><h4>Поддержка</h4><p>Берём на эксплуатацию по SLA, ведём отчётность в личном кабинете.</p></div>
+</div></div></section>
+<section id=about class=soft><div class="wrap about"><div>
+<div class=eyebrow>О компании</div><h2 class=big>Небольшая инженерная команда</h2>
+<p class=sub style="margin-bottom:0">{{ s.site_about or "Мы занимаемся серверной инфраструктурой и веб-проектами с 2014 года. Работаем без менеджеров-посредников: задачу обсуждает и решает инженер, который будет её сопровождать. Не берём больше проектов, чем можем качественно вести." }}</p>
+<ul><li>Прямой контакт с инженером, а не с колл-центром</li><li>Документация и доступы передаются заказчику</li><li>Работаем по договору, закрывающие документы</li><li>Отчёт о работах и состоянии систем каждый месяц</li></ul>
+</div><div class=scard><h3>Частые задачи</h3><p style="margin-bottom:12px">С чем к нам приходят чаще всего:</p>
+<div style="padding:8px 0;border-bottom:1px solid #e4e9f0">Сайт падает под нагрузкой</div>
+<div style="padding:8px 0;border-bottom:1px solid #e4e9f0">Нужен перенос на другой сервер</div>
+<div style="padding:8px 0;border-bottom:1px solid #e4e9f0">Нет резервных копий</div>
+<div style="padding:8px 0;border-bottom:1px solid #e4e9f0">Ушёл прежний подрядчик</div>
+<div style="padding:8px 0">Нужен личный кабинет для клиентов</div></div></div></section>
+<section id=contact><div class=wrap><div class=contact><div>
+<div class=eyebrow style="color:#6ea8ff">Контакты</div><h2>Расскажите о задаче</h2>
+<p>Опишите, что нужно сделать или что сейчас не работает. Ответим в рабочее время и предложим варианты.</p>
+<div class=meta>{% if s.site_phone %}<div>Телефон: {{ s.site_phone }}</div>{% endif %}{% if s.site_email %}<div>Почта: {{ s.site_email }}</div>{% endif %}{% if s.site_addr %}<div>{{ s.site_addr }}</div>{% endif %}<div>Пн–Пт, 10:00–19:00 (МСК)</div><div>Дежурная смена для клиентов на поддержке — круглосуточно</div></div>
+</div><form method=post action="/callback">
+<label>Имя *</label><input name=name required placeholder="Как к вам обращаться">
+<label>Телефон *</label><input name=phone required placeholder="+7 900 000-00-00">
+<label>Почта</label><input name=email type=email placeholder="you@company.ru">
+<label>Задача</label><textarea name=comment placeholder="Коротко о проекте или проблеме"></textarea>
+<p style="margin-top:18px"><button class=btn style="width:100%">Отправить заявку</button></p>
+<div style="font-size:12px;color:#7d93b0;margin-top:10px">Отправляя форму, вы соглашаетесь с <a href="/privacy" style="color:#9db1cb;text-decoration:underline">обработкой данных</a>.</div>
+</form></div></div></section>
+<footer><div class="wrap foot">
+<div class=col><a class=brand href="/" style="font-size:16px"><span class=mark style="width:24px;height:24px;font-size:12px">И</span>{{ s.site_name }}</a><span>© 2026. Все права защищены.</span>{% if s.site_inn %}<span>ИНН {{ s.site_inn }}</span>{% endif %}</div>
+<div class=col><a href="#services">Услуги</a><a href="#pricing">Тарифы</a><a href="#process">Как работаем</a></div>
+<div class=col><a href="#about">О компании</a><a href="#contact">Контакты</a><a href="/privacy">Обработка данных</a></div>
+<div class=col><a href="/login">Личный кабинет</a>{% if s.site_email %}<a href="mailto:{{ s.site_email }}">{{ s.site_email }}</a>{% endif %}</div>
+</div></footer></body></html>''')
+print("публичные шаблоны готовы")
+PY_TPL
+
+python3 - <<'PY_ADM'
+import pathlib
+d=pathlib.Path("templates")
+css=(d/"login.html").read_text().split("<style>")[1].split("</style>")[0]
+dark='''body{background:#060913;color:#e7ecf5;background-image:radial-gradient(1000px 700px at 10% -10%,rgba(59,130,246,.18),transparent 60%),radial-gradient(900px 700px at 95% 5%,rgba(139,92,246,.14),transparent 60%);background-attachment:fixed}
+a{color:#22d3ee}.card{background:linear-gradient(160deg,rgba(255,255,255,.06),rgba(255,255,255,.02));border-color:rgba(148,163,184,.16);backdrop-filter:blur(10px)}
+input,select,textarea{background:rgba(6,9,19,.55);border-color:rgba(148,163,184,.2);color:#e7ecf5}select option{background:#141a2e}
+code{background:rgba(6,9,19,.6);border-color:rgba(148,163,184,.2);color:#6ee7b7}
+th,td{border-color:rgba(148,163,184,.16)}th,.hint,label{color:#93a0b8}
+.btn{background:linear-gradient(90deg,#22d3ee,#3b82f6);color:#04121f}.btn.o{background:rgba(255,255,255,.08);border-color:rgba(148,163,184,.2);color:#e7ecf5}
+.btn.g{background:linear-gradient(90deg,#34d399,#10b981);color:#04231a}.btn.r{background:linear-gradient(90deg,#f87171,#ef4444);color:#fff}
+.msg{background:rgba(59,130,246,.14);border-color:rgba(59,130,246,.4);color:#bfdbfe}
+.badge.on{background:rgba(52,211,153,.18);color:#6ee7b7}.badge.off{background:rgba(248,113,113,.16);color:#fca5a5}
+header{background:rgba(20,26,46,.85);backdrop-filter:blur(14px);border-bottom:1px solid rgba(148,163,184,.16);padding:13px 22px;display:flex;align-items:center;gap:14px;flex-wrap:wrap;position:sticky;top:0;z-index:5}
+header h1{font-size:17px;flex:1;margin:0}
+.tabs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px}
+.tabs button{padding:9px 15px;border:1px solid rgba(148,163,184,.2);background:rgba(255,255,255,.04);color:#e7ecf5;border-radius:11px;cursor:pointer;font-size:14px;font-family:inherit}
+.tabs button.active{background:linear-gradient(90deg,#22d3ee,#3b82f6);color:#04121f;border-color:transparent;font-weight:600}
+.tab{display:none}.tab.active{display:block}
+.dot{width:10px;height:10px;border-radius:50%;display:inline-block;background:#64748b;margin-right:6px}.dot.ok{background:#34d399}.dot.bad{background:#f87171}
+textarea.big{min-height:230px;font-family:ui-monospace,monospace;font-size:12px;white-space:pre}
+.actions{display:flex;gap:6px;flex-wrap:wrap;align-items:center}.actions form{display:flex;gap:4px;align-items:center;margin:0}.actions input{width:86px;padding:6px 8px;font-size:12px}
+.tablewrap{overflow-x:auto}.bar{height:6px;background:rgba(148,163,184,.2);border-radius:4px;margin-top:5px}.bar i{display:block;height:6px;border-radius:4px;background:linear-gradient(90deg,#22d3ee,#8b5cf6)}
+'''
+def pg(t,b):
+    return '<!doctype html><html lang=ru><head><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>'+t+'</title><style>'+css+dark+'</style></head><body>'+b+'</body></html>'
+tabs=[("clients","👥 Клиенты"),("plans","💰 Тарифы"),("settings","⚙️ Настройки"),("ext","🧩 Расширение"),("tools","🧰 Сервис"),("security","🔒 Пароль"),("diag","🩺 Диагностика")]
+H=['<header><h1>🛰️ {{ s.panel_name }}</h1><span id=xuiStatus style="font-size:13px;color:#93a0b8"><span class=dot id=xuiDot></span>3x-ui…</span><a href="/certs">🔐 Сертификаты</a><a href="/site">🌐 Сайт</a><a href="/extension.zip">⬇ Расширение</a><a href="/logout">Выйти ({{ user }})</a></header><main class=wrap style="padding:22px">{% if msg %}<div class=msg>{{ msg }}</div>{% endif %}<div class=tabs>']
+for i,(k,t) in enumerate(tabs): H.append('<button data-tab="%s"%s>%s</button>'%(k,' class=active' if i==0 else '',t))
+H.append('</div>')
+H.append('''<div class="tab active" id=tab-clients>
+{% set regs=get_regs() %}<div class=card><h2>📝 Заявки ({{ regs|selectattr("status","equalto","pending")|list|length }} новых)</h2>
+<form method=post action="/registrations/clear" onsubmit="return confirm('Удалить обработанные?')"><button class="btn sm o">🧹 Очистить обработанные</button></form>
+{% for r in regs %}<div style="border-bottom:1px solid rgba(148,163,184,.16);padding:10px 0"><b>{{ r.name }}</b> · 📞 {{ r.phone }}{% if r.email %} · ✉️ {{ r.email }}{% endif %}
+<div class=hint>{{ r.created_at }} · {{ r.code }} · {% if r.status=="pending" %}<span class="badge off">на проверке</span>{% elif r.status=="approved" %}<span class="badge on">одобрена</span>{% else %}<span class="badge off">отклонена</span>{% endif %}{% if r.comment %} · {{ r.comment[:80] }}{% endif %}</div>
+<div class=actions style="margin-top:6px"><form method=post action="/registrations/{{ r.id }}/delete"><button class="btn sm r">🗑</button></form>
+{% if r.status=="pending" %}<form method=post action="/registrations/{{ r.id }}/approve"><select name=plan_id style="max-width:150px"><option value=0>без тарифа</option>{% for p in get_plans() %}<option value="{{ p.id }}">{{ p.name }}</option>{% endfor %}</select><input name=balance type=number step=0.01 value=0><label style="display:flex;gap:4px;align-items:center;font-size:12px;margin:0"><input type=checkbox name=browser value=1 checked style="width:auto">браузер</label><button class="btn sm g">✔ Одобрить</button></form>
+<form method=post action="/registrations/{{ r.id }}/reject"><button class="btn sm r">✕</button></form>{% endif %}</div></div>{% else %}<p class=hint>Заявок нет</p>{% endfor %}</div>
+<div class=card><h2>Добавить клиента</h2><form method=post action="/clients/add"><div class=grid>
+<div><label>Telegram ID (необязательно)</label><input name=tg_id placeholder="пусто = без Telegram"></div>
+<div><label>Имя *</label><input name=name required></div><div><label>Email *</label><input name=email required></div>
+<div><label>Баланс ₽</label><input name=balance type=number step=0.01 value=0></div>
+<div><label>Лимит GB (0=∞)</label><input name=limit_gb type=number step=0.1 value=0></div>
+<div><label>Inbound</label><select name=inbound_id id=addInbound><option value=0>по умолчанию (№{{ s.inbound_id }})</option></select></div>
+<div><label>Браузер-прокси</label><select name=browser><option value=1 selected>создать + ключ</option><option value="">не нужен</option></select></div>
+</div><p style="margin-top:12px"><button class=btn>➕ Добавить</button></p></form></div>
+<div class=card><h2>📥 Импорт из 3x-ui</h2><form method=post action="/clients/import" class=actions><select name=inbound_id id=impInbound style="max-width:300px"><option value=0>текущий (№{{ s.inbound_id }})</option></select><button class=btn>Импортировать</button></form></div>
+<div class=card><h2>Клиенты ({{ clients|length }})</h2><div class=tablewrap><table><tr><th>Клиент</th><th>Баланс</th><th>Трафик</th><th>До</th><th>Ключ/код</th><th>Статус</th><th>Действия</th></tr>
+{% for c in clients %}<tr><td><b>{{ c.name }}</b><br><code>{{ c.email }}</code><br><span class=hint>{{ c.tg_id }}</span></td>
+<td>{{ "%.2f"|format(c.balance) }} ₽</td><td>{{ c.used_gb }}/{% if c.limit_gb %}{{ "%g"|format(c.limit_gb) }}{% else %}∞{% endif %}{% if c.limit_gb %}<div class=bar><i style="width:{{ c.percent }}%"></i></div>{% endif %}</td>
+<td>{{ c.paid_str }}</td><td><code>{{ c.ext_key }}</code><br><code>{{ c.access_code }}</code>{% if c.http_port %}<br><span class=hint>порт {{ c.http_port }}</span>{% endif %}</td>
+<td>{% if c.enabled %}<span class="badge on">вкл</span>{% else %}<span class="badge off">выкл</span>{% endif %}</td>
+<td><div class=actions>
+<form method=post action="/clients/{{ c.id }}/topup"><input name=amount type=number step=0.01 placeholder="₽"><button class="btn sm g">＋₽</button></form>
+<form method=post action="/clients/{{ c.id }}/reset"><button class="btn sm o">Сброс</button></form>
+<form method=post action="/clients/{{ c.id }}/toggle"><button class="btn sm {% if c.enabled %}r{% else %}g{% endif %}">{% if c.enabled %}Выкл{% else %}Вкл{% endif %}</button></form>
+{% if not c.http_port %}<form method=post action="/clients/{{ c.id }}/browser"><button class="btn sm o">＋HTTP</button></form>{% endif %}
+<form method=post action="/clients/{{ c.id }}/sync"><button class="btn sm o">Синк</button></form>
+<a class="btn sm g" href="/enter/{{ c.tg_id }}/{{ c.access_code }}" target=_blank>🔗</a>
+{% for p in get_plans() %}<form method=post action="/clients/{{ c.id }}/setplan/{{ p.id }}"><button class="btn sm o">{{ p.name }}</button></form>{% endfor %}
+<form method=post action="/clients/{{ c.id }}/code"><input name=code placeholder="код"><button class="btn sm o">Код</button></form>
+<form method=post action="/clients/{{ c.id }}/codeoff"><button class="btn sm o">🔓</button></form>
+<form method=post action="/clients/{{ c.id }}/delete" onsubmit="return confirm('Удалить {{ c.email }}?')"><button class="btn sm r">✕</button></form>
+</div></td></tr>{% else %}<tr><td colspan=7>Клиентов нет</td></tr>{% endfor %}</table></div></div></div>''')
+H.append('''<div class=tab id=tab-plans><div class=card><h2>Новый тариф</h2><form method=post action="/plans/add"><div class=grid>
+<div><label>Название</label><input name=name required></div><div><label>Цена ₽</label><input name=price type=number step=0.01 value=200></div>
+<div><label>Дней</label><input name=period_days type=number value=30></div><div><label>Лимит GB (0=∞)</label><input name=limit_gb type=number step=0.1 value=0></div>
+<div><label>Описание</label><input name=description></div></div><p style="margin-top:12px"><button class=btn>➕ Добавить</button></p></form></div>
+{% for p in get_plans(False) %}<div class=card><h2>{{ p.name }} <span class=hint>ID {{ p.id }} · {% if p.enabled %}вкл{% else %}выкл{% endif %}</span></h2>
+<form method=post action="/plans/{{ p.id }}/save"><div class=grid>
+<div><label>Название</label><input name=name value="{{ p.name }}"></div><div><label>Цена</label><input name=price type=number step=0.01 value="{{ p.price }}"></div>
+<div><label>Дней</label><input name=period_days type=number value="{{ p.period_days }}"></div><div><label>Лимит GB</label><input name=limit_gb type=number step=0.1 value="{{ p.limit_gb }}"></div>
+<div><label>Описание</label><input name=description value="{{ p.description }}"></div></div><p style="margin-top:12px"><button class="btn sm g">💾 Сохранить</button></p></form>
+<div class=actions style="margin-top:8px"><form method=post action="/plans/{{ p.id }}/toggle"><button class="btn sm o">{% if p.enabled %}Отключить{% else %}Включить{% endif %}</button></form>
+<form method=post action="/plans/{{ p.id }}/delete"><button class="btn sm r">✕</button></form></div></div>{% endfor %}
+<div class=card><h2>🎁 Промокоды</h2><p class=hint>balance — деньги; plan — бесплатный тариф (значение = ID тарифа); days — бонусные дни.</p>
+<form method=post action="/promos/add" style="margin-top:12px"><div class=grid>
+<div><label>Код</label><input name=code required style="text-transform:uppercase"></div>
+<div><label>Тип</label><select name=kind><option value=balance>balance</option><option value=plan>plan</option><option value=days>days</option></select></div>
+<div><label>Значение</label><input name=value type=number step=0.01 value=100></div>
+<div><label>Лимит (0=∞)</label><input name=max_uses type=number value=0></div>
+<div><label>Срок, дней (0=∞)</label><input name=valid_days type=number value=0></div></div>
+<p style="margin-top:12px"><button class=btn>➕ Создать</button></p></form>
+<div class=tablewrap style="margin-top:14px"><table><tr><th>Код</th><th>Тип</th><th>Знач</th><th>Исп</th><th>Статус</th><th></th></tr>
+{% for p in get_promos() %}<tr><td><code>{{ p.code }}</code></td><td>{{ p.kind }}</td><td>{{ "%g"|format(p.value) }}</td><td>{{ p.used_count }}/{{ p.max_uses or "∞" }}</td>
+<td>{% if p.enabled %}<span class="badge on">вкл</span>{% else %}<span class="badge off">выкл</span>{% endif %}</td>
+<td><div class=actions><form method=post action="/promos/{{ p.id }}/toggle"><button class="btn sm o">⇄</button></form><form method=post action="/promos/{{ p.id }}/delete"><button class="btn sm r">✕</button></form></div></td></tr>{% else %}<tr><td colspan=6>Нет</td></tr>{% endfor %}</table></div></div></div>''')
+H.append('''<div class=tab id=tab-settings>
+<div class=card><h2>🪄 Автонастройка из 3x-ui</h2><p class=hint>Подтянет inbound, порт, SNI, Reality pbk/sid и шифрование.</p>
+<form method=post action="/xui/autoconfig" class=actions style="margin-top:10px"><select name=inbound_id id=acInbound style="max-width:340px"><option value="">автовыбор</option></select><button class=btn>🔍 Подтянуть</button><button type=button class="btn o" onclick=loadIb()>Обновить</button></form></div>
+<form method=post action="/settings">
+<div class=card><h2>3x-ui</h2><div class=grid>
+<div><label>URL панели (с base path)</label><input name=xui_url value="{{ s.xui_url }}"></div>
+<div><label>Логин</label><input name=xui_user value="{{ s.xui_user }}"></div>
+<div><label>Пароль</label><input name=xui_pass type=password value="{{ s.xui_pass }}"></div>
+<div><label>API-токен</label><input name=xui_api_token value="{{ s.xui_api_token }}"></div>
+<div><label>Inbound ID</label><input name=inbound_id value="{{ s.inbound_id }}"></div></div></div>
+<div class=card><h2>Ссылки</h2><div class=grid>
+<div><label>Публичный URL</label><input name=public_url value="{{ s.public_url }}"></div>
+<div><label>URL админки</label><input name=admin_url value="{{ s.admin_url }}"></div>
+<div><label>База подписки</label><input name=sub_url_base value="{{ s.sub_url_base }}"></div>
+<div><label>SNI</label><input name=sni value="{{ s.sni }}"></div><div><label>Порт VLESS</label><input name=vless_port value="{{ s.vless_port }}"></div>
+<div><label>Reality pbk</label><input name=reality_pbk value="{{ s.reality_pbk }}"></div><div><label>Reality sid</label><input name=reality_sid value="{{ s.reality_sid }}"></div>
+<div><label>Fingerprint</label><input name=fp value="{{ s.fp }}"></div></div></div>
+<div class=card><h2>Telegram</h2><div class=grid>
+<div><label>Bot Token</label><input name=bot_token value="{{ s.bot_token }}"></div>
+<div><label>Telegram ID админа</label><input name=admin_tg_id value="{{ s.admin_tg_id }}"></div>
+<div><label>Название панели</label><input name=panel_name value="{{ s.panel_name }}"></div></div></div>
+<div class=card><h2>Биллинг и прокси</h2><div class=grid>
+<div><label>Биллинг</label><select name=billing_enabled><option value=0 {% if s.billing_enabled=="0" %}selected{% endif %}>выкл</option><option value=1 {% if s.billing_enabled=="1" %}selected{% endif %}>вкл</option></select></div>
+<div><label>Цена по умолчанию</label><input name=price value="{{ s.price }}"></div>
+<div><label>Период, дней</label><input name=period_days value="{{ s.period_days }}"></div>
+<div><label>Секрет webhook</label><input name=billing_secret value="{{ s.billing_secret }}"></div>
+<div><label>Порт прокси от</label><input name=http_port_start value="{{ s.http_port_start }}"></div>
+<div><label>Порт прокси до</label><input name=http_port_end value="{{ s.http_port_end }}"></div>
+<div><label>Показ ссылок</label><select name=require_plan><option value=1 {% if s.require_plan!="0" %}selected{% endif %}>после тарифа</option><option value=0 {% if s.require_plan=="0" %}selected{% endif %}>сразу</option></select></div>
+</div></div><button class=btn>💾 Сохранить</button></form></div>''')
+H.append('''<div class=tab id=tab-ext><div class=card><h2>Расширение</h2><p><a class=btn href="/extension.zip">⬇ Скачать zip</a></p>
+<p class=hint>chrome://extensions → режим разработчика → загрузить распакованное → ввести код. Шифрование: {% if tls_on() %}<span class="badge on">TLS активен</span>{% else %}<span class="badge off">HTTP (нужен валидный сертификат)</span>{% endif %}</p></div>
+<div class=card><h2>🧩 Пресеты</h2><form method=post action="/presets/add"><label>Название</label><input name=name required><label>Домены</label><textarea name=domains required placeholder="gosuslugi.ru"></textarea><p style="margin-top:10px"><button class=btn>➕ Добавить/обновить</button></p></form>
+{% set pr=load_json(s.ext_presets or "{}") %}<div class=tablewrap style="margin-top:14px"><table><tr><th>Пресет</th><th>Домены</th><th></th></tr>
+{% for n,ds in pr.items() %}<tr><td><b>{{ n }}</b></td><td class=hint>{{ ds|length }}: {{ ds[:4]|join(", ") }}{% if ds|length>4 %}…{% endif %}</td>
+<td><form method=post action="/presets/delete"><input type=hidden name=name value="{{ n }}"><button class="btn sm r">✕</button></form></td></tr>{% endfor %}</table></div></div>
+<form method=post action="/settings"><div class=card><h2>Внешние списки (JSON)</h2><textarea name=ext_lists>{{ s.ext_lists }}</textarea></div>
+<div class=card><h2>Пресеты — JSON</h2><textarea name=ext_presets>{{ s.ext_presets }}</textarea></div><button class=btn>💾 Сохранить</button></form>
+<div class=card><h2>Предложения ({{ suggestions|length }})</h2>{% for g in suggestions %}<p><b>{{ g.name }}</b> <code>{{ g.domains[:100] }}</code>
+<span class=actions><form method=post action="/suggestions/{{ g.id }}/approve"><button class="btn sm g">Одобрить</button></form><form method=post action="/suggestions/{{ g.id }}/delete"><button class="btn sm r">✕</button></form></span></p>{% else %}<p class=hint>Нет</p>{% endfor %}</div></div>''')
+H.append('''<div class=tab id=tab-tools>
+<div class=card><h2>🛰️ Гостевой доступ (диагностика помощнику)</h2><p>{% if s.guest_enabled=="1" %}<span class="badge on">вкл</span>{% else %}<span class="badge off">выкл</span>{% endif %}</p>
+<div class=actions style="margin-top:10px"><form method=post action="/guest/toggle"><button class="btn sm {% if s.guest_enabled=='1' %}r{% else %}g{% endif %}">{% if s.guest_enabled=="1" %}Выключить{% else %}Включить{% endif %}</button></form>
+<form method=post action="/guest/rotate"><button class="btn sm o">🔄 Новый токен</button></form></div>
+<input readonly style="margin-top:12px" value="{{ s.public_url }}/guest/{{ s.guest_token }}"></div>
+<div class=card><h2>⬆️ Обновление файлом</h2><p class=hint>.zip с файлами проекта или .py/.html. Проверка → бэкап → применение → авто-откат.</p>
+<form method=post action="/update/upload" enctype=multipart/form-data class=actions style="margin-top:10px"><input type=file name=file style="width:auto"><button class=btn>⬆️ Загрузить</button><button type=button class="btn o" onclick=upd()>Статус</button></form>
+<textarea id=updOut class=big readonly style="margin-top:12px"></textarea></div>
+<div class=card><h2>🧪 Маршруты API 3x-ui</h2><button class="btn o" onclick=prb()>Проверить</button><textarea id=prbOut class=big readonly style="margin-top:12px"></textarea></div></div>''')
+H.append('''<div class=tab id=tab-security><div class=card><h2>Смена пароля</h2><form method=post action="/security"><div class=grid>
+<div><label>Старый</label><input name=old type=password required></div><div><label>Новый (мин 6)</label><input name=new type=password required></div>
+<div><label>Повтор</label><input name=new2 type=password required></div></div><p style="margin-top:12px"><button class=btn>🔒 Сменить</button></p></form></div></div>
+<div class=tab id=tab-diag><div class=card><h2>🩺 Диагностика</h2><div class=actions><button class=btn onclick=dg()>🔄 Собрать</button><button class="btn g" onclick=cpt(this)>📋 Копировать</button></div>
+<textarea id=diagReport class=big readonly style="margin-top:14px" placeholder="Нажмите «Собрать»"></textarea></div></div>''')
+H.append('''</main><script>
+document.querySelectorAll('.tabs button').forEach(b=>b.onclick=()=>{document.querySelectorAll('.tabs button').forEach(x=>x.classList.remove('active'));document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));b.classList.add('active');document.getElementById('tab-'+b.dataset.tab).classList.add('active');localStorage.setItem('pm_tab',b.dataset.tab);if(b.dataset.tab==='diag')dg();});
+const sv=localStorage.getItem('pm_tab');if(sv){const b=document.querySelector('.tabs button[data-tab="'+sv+'"]');if(b)b.click();}
+async function poll(){const d=document.getElementById('xuiDot'),t=document.getElementById('xuiStatus');try{const j=await (await fetch('/api/xui_status')).json();d.className='dot '+(j.ok?'ok':'bad');t.innerHTML='';t.appendChild(d);t.append(j.ok?('3x-ui: '+j.xray+' CPU '+j.cpu+'%'):'3x-ui недоступен');}catch(e){d.className='dot bad';}}
+poll();setInterval(poll,20000);
+async function loadIb(){let d=[];try{const j=await (await fetch('/xui/inbounds')).json();if(j.ok)d=j.inbounds;}catch(e){}
+const lb=i=>'№'+i.id+' · порт '+i.port+' · '+(i.clients||0)+' кл. · '+(i.remark||'');
+const ac=document.getElementById('acInbound');if(ac){ac.innerHTML='<option value="">автовыбор</option>';d.forEach(i=>{const o=document.createElement('option');o.value=i.id;o.textContent=lb(i);ac.appendChild(o)});}
+['addInbound','impInbound'].forEach(id=>{const s=document.getElementById(id);if(!s)return;const df=s.querySelector('option[value="0"]');s.innerHTML='';if(df)s.appendChild(df);d.forEach(i=>{const o=document.createElement('option');o.value=i.id;o.textContent=lb(i);s.appendChild(o)});});}
+loadIb();
+async function dg(){const t=document.getElementById('diagReport');t.value='Собираю…';try{const j=await (await fetch('/api/diagnostics')).json();t.value=j.report||j.error||'ошибка';}catch(e){t.value='Ошибка: '+e;}}
+function cpt(b){const t=document.getElementById('diagReport');if(!t.value)return;t.select();navigator.clipboard.writeText(t.value).then(()=>{const x=b.textContent;b.textContent='✅';setTimeout(()=>b.textContent=x,1500)});}
+async function upd(){document.getElementById('updOut').value=(await (await fetch('/update/status')).json()).text||'';}
+async function prb(){document.getElementById('prbOut').value=JSON.stringify(await (await fetch('/api/probe')).json(),null,1);}
+</script>''')
+(d/"admin.html").write_text(pg("Админка","".join(H)))
+
+CB=['<main class=wrap style="padding:24px"><h1>🔐 Сертификаты и шифрование</h1>',
+'{% if msg %}<div class=msg>{{ msg }}</div>{% endif %}',
+'<div class=card><h2>Текущее состояние</h2><div class=grid>',
+'<div><span class=hint>IP сервера</span><h2>{{ ip }}</h2></div>',
+'<div><span class=hint>Домен</span><h2>{{ s.domain or "—" }}</h2></div>',
+'<div><span class=hint>Доверенный сертификат</span><h2>{% if trusted %}<span class="badge on">да</span>{% else %}<span class="badge off">нет</span>{% endif %}</h2></div>',
+'<div><span class=hint>Шифрование прокси</span><h2>{% if tlson %}<span class="badge on">TLS</span>{% else %}<span class="badge off">HTTP</span>{% endif %}</h2></div>',
+'</div><p class=hint>Выбран: <code>{{ chosen or "нет" }}</code></p>',
+'<p class=hint>Chrome принимает HTTPS-прокси только с доверенным сертификатом. Пока сертификат самоподписанный — прокси работает по HTTP, сайт и консоль по HTTPS с предупреждением браузера.</p></div>',
+'<div class=card><h2>Найденные сертификаты (автопоиск)</h2><div class=tablewrap><table>',
+'<tr><th>Файл</th><th>CN</th><th>SAN</th><th>Истекает</th><th>Дней</th><th>Доверенный</th><th>Совпадает</th></tr>',
+'{% for c in certs %}<tr><td><code>{{ c.cert }}</code><br><span class=hint>{{ c.src }}</span></td><td>{{ c.cn }}</td>',
+'<td class=hint>{{ c.sans|join(", ") }}</td><td class=hint>{{ c.end }}</td><td>{{ c.days if c.days is not none else "?" }}</td>',
+'<td>{% if c.trusted %}<span class="badge on">да</span>{% else %}<span class="badge off">нет</span>{% endif %}</td>',
+'<td>{% if c.match %}<span class="badge on">да</span>{% else %}<span class="badge off">нет</span>{% endif %}</td></tr>',
+'{% else %}<tr><td colspan=7>Сертификатов не найдено</td></tr>{% endfor %}</table></div>',
+'<p class=hint>Сканируются /root/cert/*, /etc/letsencrypt/live/*, /etc/x-ui/cert/*, /opt/cert/* и указанные вручную пути.</p></div>',
+'<form method=post action="/certs/apply"><div class=card><h2>Режим и применение</h2><div class=grid>',
+'<div><label>Режим выбора</label><select name=cert_mode>',
+'<option value=auto {% if s.cert_mode=="auto" %}selected{% endif %}>Авто — лучший доверенный</option>',
+'<option value=manual {% if s.cert_mode=="manual" %}selected{% endif %}>Вручную — пути ниже</option>',
+'<option value=self {% if s.cert_mode=="self" %}selected{% endif %}>Самоподписанный (голая установка)</option></select></div>',
+'<div><label>Домен (пусто = по IP)</label><input name=domain value="{{ s.domain }}" placeholder="example.com"></div>',
+'<div><label>Свой fullchain.pem</label><input name=tls_cert value="{{ s.tls_cert }}" placeholder="/root/cert/домен/fullchain.pem"></div>',
+'<div><label>Свой privkey.pem</label><input name=tls_key value="{{ s.tls_key }}" placeholder="/root/cert/домен/privkey.pem"></div>',
+'<div><label>Email для Let\'s Encrypt</label><input name=le_email value="{{ s.le_email }}"></div>',
+'<div><label>Шифрование браузер-прокси</label><select name=proxy_tls>',
+'<option value=1 {% if s.proxy_tls!="0" %}selected{% endif %}>вкл при доверенном сертификате</option>',
+'<option value=0 {% if s.proxy_tls=="0" %}selected{% endif %}>выкл</option></select></div></div>',
+'<p class=hint>«Применить везде» пересобирает nginx (443/8443/2096/2087/2083), ставит TLS на браузерные прокси xray и перезапускает резервный канал.</p>',
+'<div class=actions style="margin-top:14px"><button class=btn>💾 Применить везде</button>',
+'<button type=button class="btn o" onclick=cs()>📄 Статус операций</button></div></div></form>',
+'<div class=card><h2>Выпуск и точечное применение</h2><div class=actions>',
+'<form method=post action="/certs/le"><button class="btn g">🔒 Запросить Let\'s Encrypt</button></form>',
+'<form method=post action="/certs/proxy"><button class="btn o">🔁 Применить TLS только к прокси</button></form></div>',
+'<p class=hint>Для выпуска домен должен указывать на этот сервер и порт 80 быть открытым. Монитор каждые 10 минут проверяет сертификаты и сам применяет новый.</p>',
+'<textarea id=csOut class=big readonly style="margin-top:12px" placeholder="Нажми «Статус операций»"></textarea></div>',
+'<p><a href="/">← В админку</a></p></main>',
+'<script>async function cs(){document.getElementById("csOut").value=(await (await fetch("/certs/status")).json()).text||""}</script>']
+(d/"certs.html").write_text(pg("Сертификаты","".join(CB)))
+
+SB=['<main class=wrap style="padding:24px"><h1>🌐 Публичный сайт</h1>',
+'{% if msg %}<div class=msg>{{ msg }}</div>{% endif %}',
+'<div class=card><h2>Что видит посетитель</h2><p class=hint>Нейтральный сайт IT-компании. Про прокси на нём ничего нет. Вход клиента — /login по коду доступа, админка — только по прямому адресу.</p>',
+'<p class=hint><a href="/" target=_blank>Открыть главную →</a></p></div>',
+'<form method=post action="/site"><div class=card><h2>Реквизиты и тексты</h2><div class=grid>',
+'<div><label>Название компании</label><input name=site_name value="{{ s.site_name }}"></div>',
+'<div><label>Телефон</label><input name=site_phone value="{{ s.site_phone }}"></div>',
+'<div><label>Почта</label><input name=site_email value="{{ s.site_email }}"></div>',
+'<div><label>ИНН</label><input name=site_inn value="{{ s.site_inn }}"></div>',
+'<div><label>Адрес / город</label><input name=site_addr value="{{ s.site_addr }}"></div>',
+'<div><label>Лет на рынке</label><input name=site_years value="{{ s.site_years }}"></div>',
+'<div><label>Проектов</label><input name=site_projects value="{{ s.site_projects }}"></div>',
+'<div><label>Доступность %</label><input name=site_uptime value="{{ s.site_uptime }}"></div></div>',
+'<label>Подзаголовок</label><input name=site_tagline value="{{ s.site_tagline }}">',
+'<label>Текст «О компании»</label><textarea name=site_about>{{ s.site_about }}</textarea>',
+'<p style="margin-top:14px"><button class=btn>💾 Сохранить</button></p></div></form>',
+'<p><a href="/">← В админку</a></p></main>']
+(d/"site.html").write_text(pg("Сайт","".join(SB)))
+print("админ-шаблоны готовы")
+PY_ADM
+
+echo "=========== 6. Расширение (TLS) ==========="
+cat > extension/manifest.json <<'EXT_M'
+{"manifest_version":3,"name":"PM Client","version":"7.0",
+"description":"Корпоративный клиент доступа. Настройки выдаёт сервер.",
+"permissions":["proxy","storage","webRequest","webRequestAuthProvider","alarms"],
+"host_permissions":["<all_urls>"],"background":{"service_worker":"background.js"},
+"action":{"default_popup":"popup.html","default_title":"PM Client"}}
+EXT_M
+cat > extension/background.js <<'EXT_BG'
+const D={active:false,serverUrl:"",key:"",baseConfig:null,catalog:{presets:{},remote_lists:{}},userChoices:{mode:"whitelist",active_presets:[],custom_domains:[]}};
+async function get(){const r=await chrome.storage.local.get("settings");const s=Object.assign({},D,r.settings||{});s.userChoices=Object.assign({},D.userChoices,s.userChoices||{});return s;}
+async function put(s){await chrome.storage.local.set({settings:s});}
+function dmap(ds){const m={};for(let d of ds){d=String(d||"").trim().toLowerCase().replace(/^\*\./,"").replace(/^\.+/,"").replace(/\.+$/,"");if(d&&/^[a-z0-9.-]+$/i.test(d))m[d]=1;}return m;}
+function pac(cfg,mode,ds){
+ const p=((cfg.scheme==="https")?"HTTPS ":"PROXY ")+cfg.host+":"+cfg.port;
+ const head='function FindProxyForURL(u,h){h=h.toLowerCase();if(isPlainHostName(h)||h==="localhost"||shExpMatch(h,"*.local"))return "DIRECT";var ip=dnsResolve(h);if(ip&&(isInNet(ip,"127.0.0.0","255.0.0.0")||isInNet(ip,"10.0.0.0","255.0.0.0")||isInNet(ip,"172.16.0.0","255.240.0.0")||isInNet(ip,"192.168.0.0","255.255.0.0")))return "DIRECT";var M='+JSON.stringify(dmap(ds))+';function m(x){if(M[x])return true;var i=x.indexOf(".");while(i>0){x=x.slice(i+1);if(M[x])return true;i=x.indexOf(".");}return false;}var hit=m(h);';
+ if(mode==="always")return head+'return "'+p+'";}';
+ if(mode==="blacklist")return head+'return hit?"DIRECT":"'+p+'";}';
+ return head+'return hit?"'+p+'":"DIRECT";}';}
+function badge(on,tls){chrome.action.setBadgeText({text:on?(tls?"TLS":"ON"):"OFF"});chrome.action.setBadgeBackgroundColor({color:on?(tls?"#0f9d58":"#16a34a"):"#6b7280"});}
+async function apply(s){
+ if(!s.active||!s.baseConfig||s.userChoices.mode==="off"){await chrome.proxy.settings.clear({scope:"regular"});badge(false);return;}
+ let ds=[...(s.userChoices.custom_domains||[])];const pr=(s.catalog&&s.catalog.presets)||{};
+ for(const k of (s.userChoices.active_presets||[]))if(pr[k])ds=ds.concat(pr[k]);
+ await chrome.proxy.settings.set({value:{mode:"pac_script",pacScript:{data:pac(s.baseConfig,s.userChoices.mode||"whitelist",ds)}},scope:"regular"});
+ badge(true,s.baseConfig.scheme==="https");}
+async function ft(u,t=15000){const c=new AbortController();const x=setTimeout(()=>c.abort(),t);try{return await fetch(u,{signal:c.signal,cache:"no-store"});}finally{clearTimeout(x);}}
+async function check(){const s=await get();if(!s.active||!s.key||!s.serverUrl)return;
+ try{const r=await ft(s.serverUrl+"/api/ping?key="+encodeURIComponent(s.key));
+  if(r.status===403){s.active=false;await put(s);await apply(s);return;}
+  if(r.ok){const c=await ft(s.serverUrl+"/api/get_config?key="+encodeURIComponent(s.key));
+   if(c.ok){const d=await c.json();s.baseConfig=d.base_config;s.catalog=d.catalog;await put(s);await apply(s);}}}catch(e){}}
+chrome.runtime.onInstalled.addListener(async()=>{chrome.alarms.create("k",{periodInMinutes:10});await apply(await get());check();});
+chrome.runtime.onStartup.addListener(async()=>{chrome.alarms.create("k",{periodInMinutes:10});await apply(await get());check();});
+chrome.alarms.onAlarm.addListener(a=>{if(a.name==="k")check();});
+chrome.runtime.onMessage.addListener((m,s,rep)=>{(async()=>{try{
+ if(m.type==="GET_STATE")rep(await get());
+ else if(m.type==="SAVE_STATE"){const x=Object.assign({},D,m.settings||{});x.userChoices=Object.assign({},D.userChoices,x.userChoices||{});await put(x);await apply(x);rep({ok:true});}
+ else if(m.type==="CHECK_NOW"){await check();rep(await get());}
+ else if(m.type==="LOAD_LIST"){const r=await ft(m.url,45000);if(!r.ok)throw new Error("HTTP "+r.status);
+  const t=await r.text();const seen=new Set(),out=[];
+  for(let l of t.split(/\r?\n/)){let d=l.trim().toLowerCase().replace(/^\|\|/,"").replace(/\^.*$/,"").replace(/^https?:\/\//,"").replace(/\/.*$/,"").replace(/^\.+/,"");
+   if(d&&/^[a-z0-9.-]+\.[a-z]{2,}$/i.test(d)&&!seen.has(d)){seen.add(d);out.push(d);if(out.length>=50000)break;}}
+  rep({ok:true,domains:out});}
+ else rep({ok:false,error:"unknown"});}catch(e){rep({ok:false,error:String((e&&e.message)||e)});}})();return true;});
+chrome.webRequest.onAuthRequired.addListener((d,cb)=>{(async()=>{
+ if(d.isProxy){const s=await get();const c=s.baseConfig;
+  if(s.active&&c&&c.use_auth){cb({authCredentials:{username:c.username,password:c.password}});return;}}
+ cb({});})();},{urls:["<all_urls>"]},["asyncBlocking"]);
+EXT_BG
+cat > extension/popup.html <<'EXT_H'
+<!doctype html><html lang=ru><head><meta charset=utf-8><style>
+*{box-sizing:border-box}body{width:330px;margin:0;font-family:system-ui,sans-serif;background:#0f172a;color:#e2e8f0;padding:14px}
+h1{font-size:15px;margin:0 0 10px}.hidden{display:none!important}
+input,textarea{width:100%;padding:8px 10px;border:1px solid #334155;border-radius:8px;background:#1e293b;color:#e2e8f0;font-size:13px;margin-bottom:8px}
+textarea{min-height:60px;font-family:monospace;font-size:11px}
+button{padding:8px 12px;border:0;border-radius:8px;background:#3b82f6;color:#fff;font-size:13px;cursor:pointer}
+button.wide{width:100%}button.ghost{background:#1e293b;border:1px solid #334155}button.danger{background:#7f1d1d}
+.badge{display:block;text-align:center;padding:8px;border-radius:8px;font-size:13px;font-weight:600;margin-bottom:10px}
+.badge.on{background:#14532d;color:#86efac}.badge.off{background:#334155;color:#94a3b8}
+.modes{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:10px}
+.mode-btn{background:#1e293b;border:1px solid #334155;text-align:left;padding:8px}.mode-btn.active{background:#3b82f6;border-color:#3b82f6}
+.chips{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:10px}
+.chip{padding:5px 9px;border-radius:99px;background:#1e293b;border:1px solid #334155;font-size:12px;cursor:pointer}
+.chip.active{background:#14532d;border-color:#166534;color:#86efac}
+.st{font-size:12px;color:#94a3b8;min-height:16px;margin:6px 0}.st.error{color:#fca5a5}.st.ok{color:#86efac}
+.sec{font-size:11px;color:#94a3b8;text-transform:uppercase;margin:10px 0 6px}.row{display:flex;gap:6px}.row button{flex:1}
+hr{border:0;border-top:1px solid #334155;margin:12px 0}#srv{font-size:12px;color:#94a3b8;text-align:center;margin-bottom:8px}
+</style></head><body><h1>PM Client</h1>
+<div id=act><div id=srvBlock><div class=sec>Адрес сервера</div><input id=serverUrl value="__SERVER_URL__"></div>
+<div class=sec>Код доступа</div><input id=key placeholder="A1B2C3D4" style="text-transform:uppercase">
+<button id=go class=wide>Активировать</button><div id=actSt class=st></div></div>
+<div id=ctl class=hidden><span id=badge class="badge off">Выключен</span><div id=srv></div>
+<div class=modes><button class=mode-btn data-mode=whitelist>Только указанные</button><button class=mode-btn data-mode=blacklist>Все кроме</button><button class=mode-btn data-mode=always>Весь трафик</button><button class=mode-btn data-mode=off>Выключен</button></div>
+<div class=sec>Пресеты</div><div id=chips class=chips></div>
+<div class=sec>Свои домены</div><textarea id=custom placeholder="example.com"></textarea><button id=saveD class="ghost wide">Сохранить домены</button>
+<div class=sec>Списки</div><div class=row><button id=tg class=ghost>Telegram</button><button id=ru class=ghost>Список РФ</button></div>
+<div class=row style="margin-top:6px"><button id=sync class=ghost>Обновить</button><button id=chk class=ghost>Проверить код</button></div>
+<div id=st class=st></div><hr><button id=sug class="ghost wide">Предложить пресет</button>
+<div id=sugF class=hidden style="margin-top:8px"><input id=sugN placeholder="Название"><textarea id=sugD placeholder="домены"></textarea>
+<div class=row><button id=sugSend>Отправить</button><button id=sugCancel class=ghost>Отмена</button></div><div id=sugSt class=st></div></div>
+<hr><button id=reset class="danger wide">Сбросить код</button></div>
+<script src=popup.js></script></body></html>
+EXT_H
+cat > extension/popup.js <<'EXT_J'
+const $=i=>document.getElementById(i);let S={};
+async function load(){S=await chrome.runtime.sendMessage({type:"GET_STATE"});
+ const sb=$("srvBlock"),su=$("serverUrl");
+ if(sb&&su&&/^https?:\/\/.+/.test(su.value)&&su.value.indexOf("__SERVER_URL__")===-1)sb.style.display="none";
+ if(S.active&&S.baseConfig&&S.catalog){$("act").classList.add("hidden");$("ctl").classList.remove("hidden");render();}
+ else{$("act").classList.remove("hidden");$("ctl").classList.add("hidden");if(S.serverUrl)$("serverUrl").value=S.serverUrl;}}
+function render(){document.querySelectorAll(".mode-btn").forEach(b=>{b.classList.toggle("active",b.dataset.mode===S.userChoices.mode);b.onclick=()=>{S.userChoices.mode=b.dataset.mode;save();};});
+ const c=$("chips");c.innerHTML="";const pr=(S.catalog&&S.catalog.presets)||{};
+ for(const n of Object.keys(pr)){const e=document.createElement("div");const a=(S.userChoices.active_presets||[]).includes(n);
+  e.className="chip"+(a?" active":"");e.textContent=(a?"✓ ":"· ")+n;
+  e.onclick=()=>{let l=S.userChoices.active_presets||[];S.userChoices.active_presets=l.includes(n)?l.filter(x=>x!==n):[...l,n];save();};c.appendChild(e);}
+ $("custom").value=(S.userChoices.custom_domains||[]).join("\n");
+ const tls=S.baseConfig&&S.baseConfig.scheme==="https";
+ $("srv").textContent=(tls?"🔒 TLS-шифрование":"⚠️ без шифрования")+" · "+S.key;badge();}
+function badge(){const b=$("badge");if(S.userChoices.mode==="off"||!S.active){b.textContent="Выключен";b.className="badge off";}
+ else{const tls=S.baseConfig&&S.baseConfig.scheme==="https";const l={whitelist:"только указанные",blacklist:"все кроме указанных",always:"весь трафик"};
+  b.textContent=(tls?"🔒 ":"")+"Работает: "+(l[S.userChoices.mode]||"");b.className="badge on";}}
+async function save(){render();await chrome.runtime.sendMessage({type:"SAVE_STATE",settings:S});}
+function fl(i,t,ok){const e=$(i);e.textContent=t;e.className="st"+(ok===true?" ok":ok===false?" error":"");if(ok===true)setTimeout(()=>{if(e.textContent===t)e.textContent="";},4000);}
+$("go").onclick=async()=>{const u=$("serverUrl").value.trim().replace(/\/+$/,""),k=$("key").value.trim().toUpperCase();
+ if(!u||!k){fl("actSt","Заполните поля",false);return;}fl("actSt","Проверка…");
+ try{const c=new AbortController();const t=setTimeout(()=>c.abort(),15000);
+  const r=await fetch(u+"/api/get_config?key="+encodeURIComponent(k),{signal:c.signal});clearTimeout(t);
+  if(!r.ok){let m="HTTP "+r.status;try{const j=await r.json();if(j.error)m=j.error;}catch(e){}throw new Error(m);}
+  const d=await r.json();S={active:true,serverUrl:u,key:k,baseConfig:d.base_config,catalog:d.catalog,userChoices:{mode:"whitelist",active_presets:["Telegram"],custom_domains:[]}};
+  await chrome.runtime.sendMessage({type:"SAVE_STATE",settings:S});fl("actSt","Готово",true);setTimeout(load,600);}
+ catch(e){fl("actSt",(e.name==="AbortError"?"Сервер не отвечает":e.message),false);}};
+$("saveD").onclick=()=>{S.userChoices.custom_domains=[...new Set($("custom").value.split(/\r?\n/).map(x=>x.trim().toLowerCase()).filter(Boolean))];save();fl("st","Сохранено",true);};
+$("sync").onclick=async()=>{fl("st","Обновление…");try{const r=await fetch(S.serverUrl+"/api/get_config?key="+encodeURIComponent(S.key));
+ if(r.status===403){await chrome.runtime.sendMessage({type:"SAVE_STATE",settings:{active:false}});load();return;}
+ if(!r.ok)throw new Error("HTTP "+r.status);const d=await r.json();S.catalog=d.catalog;S.baseConfig=d.base_config;await save();fl("st","Обновлено",true);}catch(e){fl("st",e.message,false);}};
+$("chk").onclick=async()=>{fl("st","Проверка…");S=await chrome.runtime.sendMessage({type:"CHECK_NOW"});if(!S.active){load();return;}render();fl("st","Код активен",true);};
+async function rl(t){fl("st","Загрузка…");const L=(S.catalog&&S.catalog.remote_lists)||{};const u=t==="tg"?L.telegram_actual:L.all_ru_blocked;
+ if(!u){fl("st","Ссылка не настроена",false);return;}
+ const r=await chrome.runtime.sendMessage({type:"LOAD_LIST",url:u});
+ if(r.ok){const s=new Set(S.userChoices.custom_domains||[]);let n=0;r.domains.forEach(d=>{if(!s.has(d)){s.add(d);n++;}});S.userChoices.custom_domains=[...s];await save();fl("st","+"+n+" доменов",true);}
+ else fl("st",r.error,false);}
+$("tg").onclick=()=>rl("tg");$("ru").onclick=()=>rl("ru");
+$("sug").onclick=()=>{$("sugF").classList.remove("hidden");$("sug").classList.add("hidden");};
+$("sugCancel").onclick=()=>{$("sugF").classList.add("hidden");$("sug").classList.remove("hidden");$("sugN").value="";$("sugD").value="";$("sugSt").textContent="";};
+$("sugSend").onclick=async()=>{const n=$("sugN").value.trim(),d=$("sugD").value.trim();
+ if(!n||!d){fl("sugSt","Заполните поля",false);return;}
+ try{const r=await fetch(S.serverUrl+"/api/suggest_preset",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({key:S.key,name:n,domains:d})});
+  if(!r.ok){let m="HTTP "+r.status;try{const j=await r.json();if(j.error)m=j.error;}catch(e){}throw new Error(m);}
+  fl("sugSt","Отправлено",true);setTimeout(()=>$("sugCancel").click(),2000);}catch(e){fl("sugSt",e.message,false);}};
+$("reset").onclick=async()=>{if(confirm("Удалить код?")){await chrome.runtime.sendMessage({type:"SAVE_STATE",settings:{active:false}});load();}};
+load();
+EXT_J
+
+echo "=========== 7. Резервный канал ==========="
+cat > /opt/rescue-agent/agent.py <<'AGENT_PY'
+#!/usr/bin/env python3
+import http.server,ssl,subprocess,os,secrets,time,hmac,urllib.parse,glob,socketserver
+B="/opt/rescue-agent"; TF=B+"/token"
+if not os.path.exists(TF):
+    open(TF,"w").write(secrets.token_urlsafe(24)); os.chmod(TF,0o600)
+TOKEN=open(TF).read().strip()
+SVC={"proxy-admin","proxy-web","proxy-bot","proxy-monitor","nginx","ssh","x-ui","web-term","web-files","rescue-agent"}
+CMDS={"disk":["df","-h"],"mem":["free","-m"],"ports":["ss","-tulnp"],
+ "ps":["ps","-eo","pid,user,%cpu,%mem,etime,cmd","--sort=-%cpu"],"uptime":["uptime"],
+ "nginxtest":["nginx","-t"],"netsetup":["bash","/opt/proxy-manager/net-setup.sh"],
+ "installerr":["bash","-c","cat /root/pm-install.err 2>/dev/null; tail -40 /root/pm-install.log"],
+ "certs":["bash","-c","for f in /root/cert/*/fullchain.pem /etc/letsencrypt/live/*/fullchain.pem /etc/pm-web/self.crt; do [ -f \"$f\" ] && { echo \"$f\"; openssl x509 -in \"$f\" -noout -enddate -subject; }; done"]}
+def run(a,t=40):
+    try:
+        r=subprocess.run(a,capture_output=True,text=True,timeout=t); return (r.stdout+r.stderr).strip() or "(пусто)"
+    except Exception as e: return "(ошибка %s)"%e
+def report():
+    L=["=== RESCUE REPORT ===",time.strftime("%F %T"),""]
+    for s in sorted(SVC): L.append("svc %-16s %s"%(s,run(["systemctl","is-active",s],6)))
+    L+=["","--disk--",run(["df","-h","/"]),"--mem--",run(["free","-m"]),"--ports--",run(["ss","-tulnp"])]
+    for s in ["proxy-admin","proxy-web","proxy-bot","nginx"]:
+        L+=["","--log %s--"%s,run(["journalctl","-u",s,"-n","15","--no-pager"])]
+    return "\n".join(L)
+PAGE="""<!doctype html><meta charset=utf-8><title>Rescue</title><style>
+body{font-family:system-ui;background:#0b1020;color:#e7ecf5;padding:24px;max-width:960px;margin:auto}
+a{color:#22d3ee;display:inline-block;margin:4px 8px 4px 0;padding:9px 15px;border:1px solid #334155;border-radius:10px;text-decoration:none}
+a:hover{background:#1e293b}h1{font-size:20px}</style><h1>🛟 Резервный канал</h1>
+<p>Перезапуск:</p>__S__<p>Данные:</p>__C__<p><a href="/__T__/report">📄 Отчёт</a></p>"""
+class H(http.server.BaseHTTPRequestHandler):
+    def log_message(self,*a): pass
+    def _s(self,c,b,ct="text/plain; charset=utf-8"):
+        b=b.encode() if isinstance(b,str) else b
+        self.send_response(c); self.send_header("Content-Type",ct)
+        self.send_header("Content-Length",str(len(b))); self.end_headers(); self.wfile.write(b)
+    def do_GET(self):
+        u=urllib.parse.urlparse(self.path); p=[x for x in u.path.split("/") if x]
+        if not p or not hmac.compare_digest(p[0],TOKEN):
+            time.sleep(1.5); return self._s(403,"forbidden")
+        r=p[1:]
+        if not r:
+            s="".join('<a href="/%s/restart/%s">↻ %s</a>'%(TOKEN,x,x) for x in sorted(SVC))
+            c="".join('<a href="/%s/cmd/%s">%s</a>'%(TOKEN,k,k) for k in CMDS)
+            return self._s(200,PAGE.replace("__T__",TOKEN).replace("__S__",s).replace("__C__",c),"text/html; charset=utf-8")
+        if r[0]=="report": return self._s(200,report())
+        if r[0]=="logs" and len(r)>1 and r[1] in SVC:
+            n=min(int(urllib.parse.parse_qs(u.query).get("n",["150"])[0]),600)
+            return self._s(200,run(["journalctl","-u",r[1],"-n",str(n),"--no-pager"],25))
+        if r[0]=="restart" and len(r)>1 and r[1] in SVC:
+            return self._s(200,"restart %s: %s"%(r[1],run(["systemctl","restart",r[1]],40) or "ok"))
+        if r[0]=="cmd" and len(r)>1 and r[1] in CMDS: return self._s(200,run(CMDS[r[1]],120))
+        return self._s(404,"not found")
+class S(socketserver.ThreadingMixIn,http.server.HTTPServer): daemon_threads=True
+if __name__=="__main__":
+    cert=key=None
+    try:
+        import sys; sys.path.insert(0,"/opt/proxy-manager")
+        import common as cm; cert,key=cm.tlspaths()
+    except Exception: pass
+    if not cert:
+        for c in glob.glob("/etc/letsencrypt/live/*/fullchain.pem")+glob.glob("/root/cert/*/fullchain.pem"):
+            k=c.replace("fullchain.pem","privkey.pem")
+            if os.path.exists(k): cert,key=c,k; break
+    if not cert and os.path.exists("/etc/pm-web/self.crt"): cert,key="/etc/pm-web/self.crt","/etc/pm-web/self.key"
+    srv=S(("0.0.0.0",8444),H)
+    if cert:
+        ctx=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER); ctx.load_cert_chain(cert,key)
+        srv.socket=ctx.wrap_socket(srv.socket,server_side=True)
+    srv.serve_forever()
+AGENT_PY
+chmod 700 /opt/rescue-agent
+cat > /etc/systemd/system/rescue-agent.service <<'U'
+[Unit]
+Description=Rescue Agent
+After=network-online.target
+[Service]
+ExecStart=/usr/bin/python3 /opt/rescue-agent/agent.py
+Restart=always
+RestartSec=3
+[Install]
+WantedBy=multi-user.target
+U
+systemctl daemon-reload && systemctl enable --now rescue-agent
+
+echo "=========== 8. Python-окружение ==========="
+python3 -m venv venv || exit 1
+./venv/bin/pip install -q --upgrade pip
+./venv/bin/pip install -q "fastapi>=0.110" "uvicorn>=0.29" "aiogram>=3.7,<4" requests aiosqlite \
+  "apscheduler>=3.10,<4" jinja2 python-multipart passlib "bcrypt==4.0.1" "pydantic>=2" qrcode pillow cryptography
+./venv/bin/python -c "import common;common.init_db();print('БД ok')" || exit 1
+[ -n "$DOMAIN" ] && ./venv/bin/python -c "import common;common.setS({'domain':'$DOMAIN'})"
+for m in common xui_api admin_app web_app bot monitor; do
+  ./venv/bin/python -c "import $m" 2>/dev/null && echo "  OK $m" || echo "  FAIL $m"; done
+./venv/bin/python - <<'CHK'
+import admin_app,web_app,common as cm
+s=cm.S()
+admin_app.T.env.get_template("admin.html").render(s=s,clients=cm.clients(),suggestions=[],msg="",user="admin")
+admin_app.T.env.get_template("certs.html").render(s=s,msg="",certs=cm.cert_list(s),chosen=cm.tlspaths(s)[0],trusted=cm.cert_trusted(s),tlson=cm.tlson(s),ip=cm.server_ip())
+admin_app.T.env.get_template("site.html").render(s=s,msg="")
+web_app.T.env.get_template("landing.html").render(s=s,msg="")
+print("шаблоны ok")
+CHK
+
+echo "=========== 9. Автоподхват сертификата ==========="
+./venv/bin/python - <<'PY_CERT'
+import common as cm, socket
+s=cm.S(); ip=cm.server_ip(); lst=cm.cert_list(s)
+print("Найденные сертификаты:")
+for x in lst:
+    print(f"  {x['cert']}  CN={x['cn']}  дней={x['days']}  доверенный={x['trusted']}  совпадает={x['match']}")
+if not s.get("domain"):
+    for x in lst:
+        cn=x["cn"]
+        if x["trusted"] and cn and "." in cn and not cn.startswith("*"):
+            try: dip=socket.gethostbyname(cn)
+            except Exception: dip=None
+            if dip==ip:
+                cm.setS({"domain":cn}); print("Домен взят из сертификата:",cn); break
+            print(f"Сертификат для {cn}, но DNS -> {dip} (ожидаем {ip}) — домен не меняю")
+c,k=cm.tlspaths()
+print("Выбран:",c or "нет","| доверенный:",cm.cert_trusted(),"| TLS-прокси:",cm.tlson())
+PY_CERT
+
+echo "=========== 10. Сервисы и применение ==========="
+for pair in admin:8003 web:8002; do n=${pair%%:*}; p=${pair##*:}
+cat > /etc/systemd/system/proxy-$n.service <<U
+[Unit]
+Description=Proxy Manager $n
+After=network-online.target
+[Service]
+WorkingDirectory=$APP
+ExecStart=$APP/venv/bin/uvicorn ${n}_app:app --host 127.0.0.1 --port $p
+Restart=always
+RestartSec=3
+[Install]
+WantedBy=multi-user.target
+U
+done
+for n in bot monitor; do
+cat > /etc/systemd/system/proxy-$n.service <<U
+[Unit]
+Description=Proxy Manager $n
+After=network-online.target
+[Service]
+WorkingDirectory=$APP
+ExecStart=$APP/venv/bin/python $n.py
+Restart=always
+RestartSec=5
+[Install]
+WantedBy=multi-user.target
+U
+done
+systemctl daemon-reload && systemctl enable proxy-admin proxy-web proxy-bot proxy-monitor >/dev/null 2>&1
+systemctl restart proxy-admin proxy-web proxy-bot proxy-monitor
+sleep 4
+bash "$APP/net-setup.sh"
+sleep 2
+echo "--- порты ---"
+for pp in 80 443 8443 2087 2083 2096 8444; do ss -tln|grep -q ":$pp " && echo "  $pp ok" || echo "  $pp НЕТ"; done
+for u in http://127.0.0.1:7681 http://127.0.0.1:8080 http://127.0.0.1:8003/login http://127.0.0.1:8002/; do
+  echo "  $u -> $(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$u" || echo 000)"; done
+B=$(./venv/bin/python -c "import common as c;s=c.S();print(c.host(s))")
+GT=$(./venv/bin/python -c "import common;print(common.S()['guest_token'])")
+RT=$(cat /opt/rescue-agent/token 2>/dev/null)
+TR=$(./venv/bin/python -c "import common;print(common.cert_trusted())")
+TL=$(./venv/bin/python -c "import common;print(common.tlson())")
+echo; echo "============================================================"
+systemctl is-active proxy-admin proxy-web proxy-bot proxy-monitor nginx web-term web-files rescue-agent
+cat <<SUM
+
+ ✅ ГОТОВО — адрес ${B}
+------------------------------------------------------------
+ 🌐 САЙТ (нейтральный)  https://${B}/
+ 🔑 Вход клиента        https://${B}/login
+ 🛡 АДМИНКА             https://${B}:8443   admin / admin — СМЕНИ
+ 🔐 СЕРТИФИКАТЫ         https://${B}:8443/certs
+ 🌐 Тексты сайта        https://${B}:8443/site
+ 🖥 ВЕБ-КОНСОЛЬ         https://${B}:2087   ${WU} / ${WP}
+ 📁 ФАЙЛЫ               https://${B}:2083   ${WU} / ${WP}
+ 🔄 ПОДПИСКИ            https://${B}:2096/sub/<id>
+ 🛟 РЕЗЕРВ              https://${B}:8444/${RT}/
+------------------------------------------------------------
+ Доверенный сертификат: ${TR}   Шифрование прокси: ${TL}
+ (True/True = браузерный прокси уже под TLS)
+------------------------------------------------------------
+ ДАЛЬШЕ:
+ 1) Админка → ⚙️ Настройки → 3x-ui:
+    URL https://${B}:31215/fgVIepQmdSaFbdecYh  логин/пароль
+    → Сохранить → 🪄 Подтянуть
+ 2) ⚙️ Настройки → Telegram: токен бота + свой TG ID
+ 3) 🔐 Сертификаты: режим Авто, «Применить везде»
+    (если сертификат уже есть — он подхватится сам)
+ 4) 🌐 Сайт: заполни название/телефон/почту/ИНН
+ 5) Клиенты → Добавить → клиент получит код и ключ
+ 6) Расширение: ${B}:8443/extension.zip → chrome://extensions
+------------------------------------------------------------
+ Пароли: /etc/pm-web/cred   Лог: /root/pm-install.log
+ Переприменить: bash $APP/net-setup.sh
+============================================================
+SUM
+[ -s "$ERRF" ] && { echo; echo "⚠️ Ошибки на этапах:"; cat "$ERRF"; }
+PART2
+bash t.sh
