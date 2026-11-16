@@ -1,9 +1,11 @@
+cat > t.sh <<'PART1'
 #!/usr/bin/env bash
 # =====================================================================
-#  PROXY MANAGER v8 — ОДИН установщик всего
+#  PROXY MANAGER v9 — единый установщик всего
+#  Автоопределение IP (публичный + локальный, для VM/NAT)
 #  Лендинг + расширение(TLS) + веб-терминал + файлы + биллинг + бот
-#  Автопоиск сертификата, работа по IP, всё управление через веб
-#  Запуск: bash t.sh          DOMAIN=example.com bash t.sh
+#  Всё управление через веб: домен, сертификаты, пароли, сервисы
+#  Запуск: bash t.sh    |    DOMAIN=example.com bash t.sh
 # =====================================================================
 set -uo pipefail
 APP=/opt/proxy-manager
@@ -14,22 +16,32 @@ trap 'echo "строка $LINENO: ошибка команды" >> "$ERRF"' ERR
 rm -f "$ERRF"
 WP0=$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 16)
 
-echo "=========== 1. Пакеты и IP ==========="
+echo "=========== 1. Пакеты и определение IP ==========="
 apt-get update -y
 DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-venv python3-pip nginx certbot \
-  curl git zip tar openssl ufw ca-certificates openssh-client dnsutils
+  curl git zip tar openssl ufw ca-certificates openssh-client dnsutils iproute2
 mkdir -p "$APP/templates" "$APP/extension" /etc/pm-web /var/www/certbot /opt/rescue-agent
-SRV_IP=$(curl -4 -s --max-time 8 https://api.ipify.org || true)
-[ -z "$SRV_IP" ] && SRV_IP=$(curl -4 -s --max-time 8 https://ifconfig.me || true)
-[ -z "$SRV_IP" ] && SRV_IP=$(hostname -I | awk '{print $1}')
-DOMAIN="${DOMAIN:-}"
-echo "IP: $SRV_IP"
 
-echo "=========== 2. Веб-доступ поднимается первым ==========="
+PUB_IP=""
+for u in https://api.ipify.org https://ifconfig.me/ip https://icanhazip.com; do
+  v=$(curl -4 -s --max-time 8 "$u" | tr -d '[:space:]')
+  case "$v" in *.*.*.*) PUB_IP="$v"; break;; esac
+done
+LOC_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
+[ -z "$PUB_IP" ] && PUB_IP="$LOC_IP"
+[ -z "$PUB_IP" ] && PUB_IP="127.0.0.1"
+DOMAIN="${DOMAIN:-}"
+echo "Публичный IP : $PUB_IP"
+echo "Локальный IP : $LOC_IP  (виртуалка/NAT)"
+[ -n "$DOMAIN" ] && echo "Домен: $DOMAIN" || echo "Домен не задан — работаем по IP, задашь в веб-админке"
+
+echo "=========== 2. Веб-доступ поднимается ПЕРВЫМ ==========="
 printf 'admin\n%s\n' "$WP0" > /etc/pm-web/cred; chmod 600 /etc/pm-web/cred
+SANS="IP:$PUB_IP,IP:127.0.0.1"
+[ -n "$LOC_IP" ] && [ "$LOC_IP" != "$PUB_IP" ] && SANS="$SANS,IP:$LOC_IP"
+[ -n "$DOMAIN" ] && SANS="DNS:$DOMAIN,$SANS"
 openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -keyout /etc/pm-web/self.key \
-  -out /etc/pm-web/self.crt -subj "/CN=${DOMAIN:-$SRV_IP}" \
-  -addext "subjectAltName=DNS:${DOMAIN:-$SRV_IP},IP:$SRV_IP,IP:127.0.0.1" 2>/dev/null
+  -out /etc/pm-web/self.crt -subj "/CN=${DOMAIN:-$PUB_IP}" -addext "subjectAltName=$SANS" 2>/dev/null
 chmod 600 /etc/pm-web/self.key
 command -v ttyd >/dev/null 2>&1 || { curl -fsSL -o /usr/local/bin/ttyd \
   https://github.com/tsl0922/ttyd/releases/latest/download/ttyd.x86_64 && chmod +x /usr/local/bin/ttyd; }
@@ -83,12 +95,13 @@ systemctl daemon-reload && systemctl enable --now web-term web-files
 command -v ufw >/dev/null && { for p in 22 2222 80 443 2087 2083 8443 8444 2096; do ufw allow $p/tcp; done; ufw allow 20000:21000/tcp; } || true
 sleep 2
 echo "############################################################"
-echo "#  КОНСОЛЬ: https://${SRV_IP}:2087   admin / ${WP0}"
-echo "#  ФАЙЛЫ:   https://${SRV_IP}:2083   admin / ${WP0}"
-echo "#  (сертификат самоподписанный -> Дополнительно/Перейти)"
+echo "#  КОНСОЛЬ: https://${PUB_IP}:2087   admin / ${WP0}"
+echo "#  ФАЙЛЫ:   https://${PUB_IP}:2083   admin / ${WP0}"
+[ -n "$LOC_IP" ] && [ "$LOC_IP" != "$PUB_IP" ] && echo "#  изнутри сети: https://${LOC_IP}:2087"
+echo "#  Сертификат самоподписанный -> Дополнительно/Перейти"
 echo "############################################################"
 
-echo "=========== 3. net-setup.sh ==========="
+echo "=========== 3. net-setup.sh (применить сертификат везде) ==========="
 cat > "$APP/net-setup.sh" <<'NETSETUP'
 #!/usr/bin/env bash
 set -uo pipefail
@@ -100,11 +113,15 @@ print((s.get("domain") or "-"),(c or "-"),(k or "-"))
 PY
 )"
 [ "$DOMAIN" = "-" ] && DOMAIN=""; [ "$CERT" = "-" ] && CERT=""; [ "$KEY" = "-" ] && KEY=""
-IP=$(curl -4 -s --max-time 6 https://api.ipify.org || true); [ -z "$IP" ] && IP=$(hostname -I|awk '{print $1}')
+IP=$(./venv/bin/python -c "import common as c;print(c.server_ip())" 2>/dev/null)
+LOC=$(hostname -I 2>/dev/null | awk '{print $1}')
+[ -z "$IP" ] && IP="$LOC"
 SN="${DOMAIN:-$IP}"
 if [ -z "$CERT" ] || [ ! -f "$CERT" ] || [ ! -f "$KEY" ]; then
+  SANS="IP:$IP,IP:127.0.0.1"; [ -n "$LOC" ] && [ "$LOC" != "$IP" ] && SANS="$SANS,IP:$LOC"
+  [ -n "$DOMAIN" ] && SANS="DNS:$DOMAIN,$SANS"
   openssl req -x509 -newkey rsa:2048 -nodes -days 3650 -keyout /etc/pm-web/self.key \
-    -out /etc/pm-web/self.crt -subj "/CN=$SN" -addext "subjectAltName=DNS:$SN,IP:$IP,IP:127.0.0.1" 2>/dev/null
+    -out /etc/pm-web/self.crt -subj "/CN=$SN" -addext "subjectAltName=$SANS" 2>/dev/null
   chmod 600 /etc/pm-web/self.key; CERT=/etc/pm-web/self.crt; KEY=/etc/pm-web/self.key
 fi
 echo "Сертификат: $CERT"
@@ -175,12 +192,12 @@ PRESETS={"Telegram":["telegram.org","t.me","telegra.ph","telesco.pe"],
 "Wikipedia":["wikipedia.org","wikimedia.org"],"Google":["google.com","gstatic.com","googleapis.com","googleusercontent.com"]}
 DEF={"panel_name":"Proxy Manager","bot_token":"","admin_tg_id":"",
 "xui_url":"http://127.0.0.1:2053","xui_user":"admin","xui_pass":"admin","xui_api_token":"","inbound_id":"1",
-"domain":"","sni":"","vless_port":"443","reality_pbk":"","reality_sid":"","fp":"chrome",
+"domain":"","server_ip":"","sni":"","vless_port":"443","reality_pbk":"","reality_sid":"","fp":"chrome",
 "billing_enabled":"0","price":"100","period_days":"30","billing_secret":secrets.token_hex(16),
 "http_port_start":"20000","http_port_end":"21000","inbounds_cache":"{}","require_plan":"1",
 "public_url":"","admin_url":"","sub_url_base":"","proxy_tls":"1","cert_mode":"auto",
 "tls_cert":"","tls_key":"","le_email":"",
-"web_user":"admin","web_pass":"","rescue_token":"","rescue_on":"1",
+"web_user":"admin","web_pass":"","rescue_token":"",
 "site_name":"Инфоструктура","site_tagline":"Проектируем, размещаем и сопровождаем серверы и веб-сервисы для малого и среднего бизнеса.",
 "site_about":"","site_phone":"","site_email":"","site_inn":"","site_addr":"",
 "site_years":"12","site_projects":"240","site_uptime":"99.9",
@@ -216,14 +233,31 @@ def db():
 def rnd(n,up=False):
     al=(string.ascii_uppercase+string.digits) if up else (string.ascii_lowercase+string.digits)
     return "".join(secrets.choice(al) for _ in range(n))
-def server_ip():
-    for u in ("https://api.ipify.org","https://ifconfig.me"):
+def detect_ips():
+    pub=""
+    for u in ("https://api.ipify.org","https://ifconfig.me/ip","https://icanhazip.com"):
         try:
-            r=requests.get(u,timeout=6)
-            if r.ok and re.match(r"^\d+\.\d+\.\d+\.\d+$",r.text.strip()): return r.text.strip()
+            r=requests.get(u,timeout=6); v=r.text.strip()
+            if r.ok and re.match(r"^\d+\.\d+\.\d+\.\d+$",v): pub=v; break
         except Exception: pass
-    try: return socket.gethostbyname(socket.gethostname())
-    except Exception: return "127.0.0.1"
+    loc=""
+    try:
+        o=subprocess.run("hostname -I",shell=True,capture_output=True,text=True,timeout=5).stdout.split()
+        loc=o[0] if o else ""
+    except Exception: pass
+    if not loc:
+        try: loc=socket.gethostbyname(socket.gethostname())
+        except Exception: loc="127.0.0.1"
+    return pub,loc
+_IPC={"t":0,"pub":"","loc":""}
+def ips(s=None):
+    s=s or S()
+    if _IPC["pub"] and time.time()-_IPC["t"]<600: return _IPC["pub"],_IPC["loc"]
+    p,l=detect_ips(); _IPC.update(t=time.time(),pub=p,loc=l); return p,l
+def server_ip(s=None):
+    s=s or S(); m=(s.get("server_ip") or "").strip()
+    if m: return m
+    p,l=ips(s); return p or l or "127.0.0.1"
 def init_db():
     with db() as c:
         c.executescript(SCHEMA)
@@ -258,7 +292,7 @@ def gb(b): return f"{(b or 0)/2**30:.2f}"
 def xui(s,t=15):
     from xui_api import XUI
     return XUI(s["xui_url"],s["xui_user"],s["xui_pass"],s.get("xui_api_token",""),timeout=t)
-def host(s): return s.get("domain") or server_ip()
+def host(s): return s.get("domain") or server_ip(s)
 def pbase(s): return (s.get("public_url") or f"https://{host(s)}").rstrip("/")
 def cab(c,s): return f"{pbase(s)}/client/{c['tg_id']}"
 def subbase(s): return (s.get("sub_url_base") or pbase(s)).rstrip("/")
@@ -341,7 +375,7 @@ def mkpromo(code,kind,val,mx=0,exp=0,note=""):
     code=str(code or "").strip().upper()
     if not code or kind not in ("balance","plan","days"): return False,"Неверные параметры"
     with db() as c:
-        if c.execute("SELECT 1 FROM promos WHERE code=?",(code,)).fetchone(): return False,"Промокод уже есть"
+        if c.execute("SELECT 1 FROM promos WHERE code=?",(code,)).fetchone(): return False,"Уже есть"
         c.execute("INSERT INTO promos(code,kind,value,max_uses,expires_at,note) VALUES(?,?,?,?,?,?)",(code,kind,float(val),int(mx),int(exp),note))
     return True,f"Промокод {code} создан"
 def reset(c,s,x):
@@ -413,7 +447,7 @@ def applypromo(c,code,s,x=None,notify=True):
     c=dict(c); code=str(code or "").strip().upper()
     if not code: return False,"Введите промокод"
     with db() as con: r=con.execute("SELECT * FROM promos WHERE code=?",(code,)).fetchone()
-    if not r: return False,"Промокод не найден"
+    if not r: return False,"Не найден"
     p=dict(r)
     if not p["enabled"]: return False,"Отключён"
     if p["expires_at"] and p["expires_at"]<now(): return False,"Истёк"
@@ -493,14 +527,14 @@ def cert_list(s=None):
                     cc,kk=os.path.join(p,cn),os.path.join(p,kn)
                     if os.path.isfile(cc) and os.path.isfile(kk): paths.append((cc,kk,base))
     if os.path.isfile("/etc/pm-web/self.crt"): paths.append(("/etc/pm-web/self.crt","/etc/pm-web/self.key","self-signed"))
-    dom=(s.get("domain") or "").strip(); ip=server_ip()
+    dom=(s.get("domain") or "").strip(); ip=server_ip(s); _,loc=ips(s)
     for cc,kk,src in paths:
         if cc in seen: continue
         seen.add(cc); i=_cinfo(cc); names=[i["cn"]]+i["sans"]
         valid=(i["days"] is None or i["days"]>0)
         out.append({"cert":cc,"key":kk,"src":src,"cn":i["cn"],"sans":i["sans"],"end":i["end"],"days":i["days"],
           "selfsigned":i["selfsigned"],"valid":valid,"trusted":(not i["selfsigned"]) and valid,
-          "match":bool((dom and dom in names) or (ip and ip in names))})
+          "match":bool((dom and dom in names) or (ip and ip in names) or (loc and loc in names))})
     return out
 def best_cert(s=None):
     s=s or S(); mode=(s.get("cert_mode") or "auto").lower(); lst=cert_list(s)
@@ -544,11 +578,10 @@ def apply_proxy_tls(s=None):
             b["streamSettings"]=ss; x.update_inbound(b); n+=1
         except Exception as e: errs.append(str(e)[:60])
     return True,f"{'TLS включён' if on else 'TLS снят'} на {n} прокси"+(("; "+"; ".join(errs)) if errs else "")
-# ---------- доступы к терминалу/файлам/резерву ----------
+# ---------- доступы ----------
 def apply_web_creds(s=None):
     s=s or S(); u=(s.get("web_user") or "admin").strip(); p=(s.get("web_pass") or "").strip()
-    if not p:
-        p=rnd(16); setS({"web_pass":p}); s["web_pass"]=p
+    if not p: p=rnd(16); setS({"web_pass":p})
     try:
         with open("/etc/pm-web/cred","w") as f: f.write(u+"\n"+p+"\n")
         os.chmod("/etc/pm-web/cred",0o600)
@@ -572,8 +605,7 @@ WantedBy=multi-user.target
     old=(s.get("_fb_prev") or "").strip()
     if old and old!=u: _run(f"filebrowser users rm '{old}' -d {fb}",10)
     setS({"_fb_prev":u})
-    _run("systemctl daemon-reload",15)
-    _run("systemctl restart web-term web-files",30)
+    _run("systemctl daemon-reload",15); _run("systemctl restart web-term web-files",30)
     return True,f"Доступ обновлён: {u} / {p}"
 def rescue_token(s=None):
     s=s or S(); t=(s.get("rescue_token") or "").strip()
@@ -589,31 +621,27 @@ def rescue_token(s=None):
     except Exception: pass
     return t
 def svc(name,action):
-    if name not in ("web-term","web-files","rescue-agent","proxy-admin","proxy-web","proxy-bot","proxy-monitor","nginx"):
-        return "не разрешено"
+    if name not in ("web-term","web-files","rescue-agent","proxy-admin","proxy-web","proxy-bot","proxy-monitor","nginx"): return "не разрешено"
     if action not in ("start","stop","restart"): return "не разрешено"
     return _run(f"systemctl {action} {name}",40) or "ok"
 def svc_state():
-    out={}
-    for n in ("web-term","web-files","rescue-agent","proxy-admin","proxy-web","proxy-bot","proxy-monitor","nginx","x-ui"):
-        out[n]=_run("systemctl is-active "+n,4)
-    return out
+    return {n:_run("systemctl is-active "+n,4) for n in
+      ("web-term","web-files","rescue-agent","proxy-admin","proxy-web","proxy-bot","proxy-monitor","nginx","x-ui")}
 def report():
-    s=S(); c,_=tlspaths(s)
+    s=S(); c,_=tlspaths(s); p,l=ips(s)
     L=["=== PROXY MANAGER REPORT ===",time.strftime("%F %T"),
-       f"domain={s.get('domain') or '(по IP)'} ip={server_ip()}",
-       f"cert={c or 'нет'} trusted={cert_trusted(s)} tls_proxy={tlson(s)} mode={s.get('cert_mode')}",
-       f"web_user={s.get('web_user')} rescue_on={s.get('rescue_on')}"]
+       f"domain={s.get('domain') or '(по IP)'} public_ip={p} local_ip={l} used={server_ip(s)}",
+       f"cert={c or 'нет'} trusted={cert_trusted(s)} tls_proxy={tlson(s)} mode={s.get('cert_mode')}"]
     try:
         for x in cert_list(s):
             L.append("  cert %s CN=%s days=%s trusted=%s match=%s"%(x["cert"],x["cn"],x["days"],x["trusted"],x["match"]))
     except Exception as e: L.append("cert err %s"%e)
     for k,v in svc_state().items(): L.append("svc %-15s %s"%(k,v))
-    for p in (8002,8003,7681,8080,443,8443,2096,2087,2083,8444):
+    for pt in (8002,8003,7681,8080,443,8443,2096,2087,2083,8444):
         try:
-            with socket.create_connection(("127.0.0.1",p),timeout=1): o="open"
+            with socket.create_connection(("127.0.0.1",pt),timeout=1): o="open"
         except Exception: o="closed"
-        L.append("port %-5s %s"%(p,o))
+        L.append("port %-5s %s"%(pt,o))
     try:
         for k,v in ibcache(s,True).items():
             if k!="_ts": L.append("inbound %s %s port=%s clients=%s enc=%s"%(k,v.get("protocol"),v.get("port"),v.get("clients"),(v.get("encryption") or "none")[:40]))
@@ -800,7 +828,11 @@ class XUI:
             out[p]=r
         return out
 PY_XUI
-
+echo "common.py + xui_api.py записаны"
+PART1
+echo "часть 1 готова"
+cat >> t.sh <<'PART2'
+cd /opt/proxy-manager
 cat > admin_app.py <<'PY_ADMIN'
 import asyncio,json,secrets,time,os,re,subprocess,shutil,tempfile,zipfile,py_compile,socket,uuid as U
 from pathlib import Path
@@ -1206,11 +1238,13 @@ async def wh(r:Request):
 @app.post("/guest/toggle")
 def gt(r:Request):
     if not auth(r): return RedirectResponse("/login",status_code=303)
-    s=cm.S(); cm.setS({"guest_enabled":"0" if s.get("guest_enabled")=="1" else "1"}); return RedirectResponse("/access?msg="+quote("Гостевой доступ переключён"),status_code=303)
+    s=cm.S(); cm.setS({"guest_enabled":"0" if s.get("guest_enabled")=="1" else "1"})
+    return RedirectResponse("/access?msg="+quote("Гостевой доступ переключён"),status_code=303)
 @app.post("/guest/rotate")
 def gr(r:Request):
     if not auth(r): return RedirectResponse("/login",status_code=303)
-    cm.setS({"guest_token":secrets.token_urlsafe(24),"guest_enabled":"0"}); return RedirectResponse("/access?msg="+quote("Токен обновлён"),status_code=303)
+    cm.setS({"guest_token":secrets.token_urlsafe(24),"guest_enabled":"0"})
+    return RedirectResponse("/access?msg="+quote("Токен обновлён"),status_code=303)
 @app.get("/api/diagnostics")
 def dg(r:Request):
     if not auth(r): return JSONResponse({"ok":False},status_code=401)
@@ -1260,7 +1294,7 @@ async def uu(r:Request):
         sc=("sleep 1; systemctl restart proxy-admin proxy-web proxy-bot proxy-monitor; sleep 6; "
             "A=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8003/login); "
             "B=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8002/); "
-            f"if [ \"$A\" = 200 ] && [ \"$B\" = 200 ]; then echo \"УСПЕХ\" > {RES}; "
+            f"if [ \"$A\" = 200 ] && [ \"$B\" = 200 ]; then echo УСПЕХ > {RES}; "
             f"else cp -rf {bd}/* /opt/proxy-manager/ 2>/dev/null; systemctl restart proxy-admin proxy-web proxy-bot proxy-monitor; "
             f"{{ echo \"ОШИБКА admin=$A web=$B — откат\"; journalctl -u proxy-admin -n 25 --no-pager; }} > {RES}; fi")
         subprocess.Popen(["bash","-c",sc],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
@@ -1277,20 +1311,21 @@ def ez(r:Request):
     if not auth(r): return RedirectResponse("/login",status_code=303)
     s=cm.S(); return Response(cm.extzip(s,s.get("domain") or r.url.hostname),media_type="application/zip",
       headers={"Content-Disposition":"attachment; filename=pm-client.zip"})
-# ---------- сертификаты ----------
 NETLOG="/opt/proxy-manager/net_result.txt"; CERTLOG="/opt/proxy-manager/cert_result.txt"
 @app.get("/certs")
 def cp_(r:Request,msg:str=""):
     if not auth(r): return RedirectResponse("/login",status_code=303)
-    s=cm.S()
+    s=cm.S(); pub,loc=cm.ips(s)
     return T.TemplateResponse(r,"certs.html",{"s":s,"msg":msg,"certs":cm.cert_list(s),
-      "chosen":cm.tlspaths(s)[0],"trusted":cm.cert_trusted(s),"tlson":cm.tlson(s),"ip":cm.server_ip()})
+      "chosen":cm.tlspaths(s)[0],"trusted":cm.cert_trusted(s),"tlson":cm.tlson(s),
+      "ip":cm.server_ip(s),"pub":pub,"loc":loc})
 @app.post("/certs/apply")
 async def ca_(r:Request):
     if not auth(r): return RedirectResponse("/login",status_code=303)
     f=await r.form()
     dom=re.sub(r"^https?://","",str(f.get("domain","")).strip().lower()).split("/")[0]
     cm.setS({"cert_mode":str(f.get("cert_mode","auto")),"domain":dom,
+      "server_ip":str(f.get("server_ip","")).strip(),
       "tls_cert":str(f.get("tls_cert","")).strip(),"tls_key":str(f.get("tls_key","")).strip(),
       "le_email":str(f.get("le_email","")).strip(),"proxy_tls":str(f.get("proxy_tls","1"))})
     open(NETLOG,"w").write("ПРИМЕНЯЕТСЯ…")
@@ -1301,10 +1336,10 @@ async def cl_(r:Request):
     if not auth(r): return RedirectResponse("/login",status_code=303)
     s=cm.S(); d=(s.get("domain") or "").strip()
     if not d: return RedirectResponse("/certs?msg="+quote("Сначала укажи домен и «Применить везде»"),status_code=303)
-    ip=cm.server_ip()
+    ip=cm.server_ip(s)
     try: dip=socket.gethostbyname(d)
     except Exception: dip=None
-    warn="" if dip==ip else f"\nВНИМАНИЕ: {d} -> {dip}, IP {ip}\n"
+    warn="" if dip==ip else f"\nВНИМАНИЕ: {d} -> {dip}, IP сервера {ip}\n"
     em=(s.get("le_email") or "").strip(); mail=f"-m {em}" if em else "--register-unsafely-without-email"
     open(CERTLOG,"w").write("ЗАПРОС…"+warn)
     sc=(f"{{ certbot certonly --webroot -w /var/www/certbot -d {d} --non-interactive --agree-tos {mail} "
@@ -1325,13 +1360,12 @@ def cs_(r:Request):
         try: t+="\n--- "+p+" ---\n"+open(p).read()
         except Exception: pass
     return {"ok":True,"text":t or "Ничего не запускали"}
-# ---------- доступы ----------
 @app.get("/access")
 def acc(r:Request,msg:str=""):
     if not auth(r): return RedirectResponse("/login",status_code=303)
     s=cm.S(); tok=cm.rescue_token(s); s=cm.S()
     return T.TemplateResponse(r,"access.html",{"s":s,"msg":msg,"tok":tok,"st":cm.svc_state(),
-      "base":cm.pbase(s),"ip":cm.server_ip()})
+      "base":cm.pbase(s),"ip":cm.server_ip(s)})
 @app.post("/access/creds")
 async def accc(r:Request):
     if not auth(r): return RedirectResponse("/login",status_code=303)
@@ -1340,25 +1374,18 @@ async def accc(r:Request):
     p=str(f.get("web_pass","")).strip()
     if str(f.get("gen"))=="1" or not p: p=cm.rnd(16)
     if len(p)<6: return RedirectResponse("/access?msg="+quote("Пароль минимум 6 символов"),status_code=303)
-    cm.setS({"web_user":u,"web_pass":p})
-    ok,m=cm.apply_web_creds()
+    cm.setS({"web_user":u,"web_pass":p}); ok,m=cm.apply_web_creds()
     return RedirectResponse("/access?msg="+quote(m),status_code=303)
 @app.post("/access/svc/{name}/{action}")
 def accs(r:Request,name:str,action:str):
     if not auth(r): return RedirectResponse("/login",status_code=303)
     res=cm.svc(name,action)
-    if name=="rescue-agent": cm.setS({"rescue_on":"1" if action in ("start","restart") else "0"})
     return RedirectResponse("/access?msg="+quote(f"{name} {action}: {res}"),status_code=303)
 @app.post("/access/rescue")
 def accr(r:Request):
     if not auth(r): return RedirectResponse("/login",status_code=303)
-    cm.setS({"rescue_token":secrets.token_urlsafe(24)}); cm.rescue_token()
-    cm.svc("rescue-agent","restart")
+    cm.setS({"rescue_token":secrets.token_urlsafe(24)}); cm.rescue_token(); cm.svc("rescue-agent","restart")
     return RedirectResponse("/access?msg="+quote("Токен резервного канала обновлён"),status_code=303)
-@app.get("/access/state")
-def accst(r:Request):
-    if not auth(r): return JSONResponse({"ok":False},status_code=401)
-    return {"ok":True,"state":cm.svc_state()}
 @app.get("/site")
 def site(r:Request,msg:str=""):
     if not auth(r): return RedirectResponse("/login",status_code=303)
@@ -1423,7 +1450,7 @@ async def cb(r:Request):
     code=cm.rnd(10,True)
     with cm.db() as con: con.execute("INSERT INTO registrations(name,phone,email,comment,code) VALUES(?,?,?,?,?)",(nm,ph,em,cmt,code))
     s=cm.S(); cm.tg(s,s.get("admin_tg_id"),f"📩 Заявка: {nm}, {ph}"+(f", {em}" if em else "")+(f"\n{cmt}" if cmt else ""))
-    return RedirectResponse("/?msg="+quote(f"Заявка принята. Номер {code}. Свяжемся в рабочее время.")+"#contact",status_code=303)
+    return RedirectResponse("/?msg="+quote(f"Заявка принята. Номер {code}.")+"#contact",status_code=303)
 @app.get("/privacy")
 def priv(r:Request): return T.TemplateResponse(r,"privacy.html",{"s":cm.S()})
 @app.middleware("http")
@@ -1581,7 +1608,7 @@ def ktext(c,s): return f"🔑 {c['ext_key']}\n\n📱 VLESS:\n{cm.vless(c,s)}\n\n
 async def start(m:Message):
     s=S()
     if adm(m.from_user.id):
-        await m.answer("👋 Админ\n/status /stats /clients /regs\n/approve <id> [тариф] /reject <id>\n/topup <email|tg> <сумма>\n/on /off /reset <email>\n/plans /promos /certs\n/newpromo <код> <balance|plan|days> <знач> [лимит] [дней]"); return
+        await m.answer("👋 Админ\n/status /stats /clients /regs /certs\n/approve <id> [тариф] /reject <id>\n/topup <email|tg> <сумма>\n/on /off /reset <email>\n/plans /promos\n/newpromo <код> <balance|plan|days> <знач> [лимит] [дней]"); return
     c=me(m.from_user.id)
     if c: await m.answer(mtext(c,s),reply_markup=kb())
     else: await m.answer(f"Вы не зарегистрированы.\nID: {m.from_user.id}\n\n{cm.pbase(s)}")
@@ -1653,7 +1680,7 @@ async def ast(m:Message):
         n=c.execute("SELECT COUNT(*) FROM clients").fetchone()[0]
         a=c.execute("SELECT COUNT(*) FROM clients WHERE enabled=1").fetchone()[0]
         p=c.execute("SELECT COUNT(*) FROM registrations WHERE status='pending'").fetchone()[0]
-    t=f"📊 {a}/{n} клиентов\n📝 заявок {p}\n🔒 TLS: {cm.tlson(s)}\n"
+    t=f"📊 {a}/{n} клиентов\n📝 заявок {p}\n🔒 TLS: {cm.tlson(s)}\nIP: {cm.server_ip(s)}\n"
     try:
         r=await asyncio.to_thread(cm.xui(s,8).status); x=(r or {}).get("xray",{})
         t+=f"🟢 xray {x.get('state','?')}"
@@ -1857,8 +1884,11 @@ if __name__=="__main__":
     try: sc.start()
     except KeyboardInterrupt: pass
 PY_MON
-echo "модули готовы"
-cat >> t.sh <<'PART2'
+echo "приложения записаны"
+PART2
+echo "часть 2 готова"
+cat >> t.sh <<'PART3'
+cd /opt/proxy-manager
 echo "=========== 5. Шаблоны ==========="
 python3 - <<'PY_TPL'
 import pathlib
@@ -1866,7 +1896,7 @@ d=pathlib.Path("templates"); d.mkdir(exist_ok=True)
 CSS='''*{box-sizing:border-box;margin:0}body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;background:#f6f8fb;color:#101828;line-height:1.6}
 a{color:#0f62fe;text-decoration:none}.wrap{max-width:1140px;margin:0 auto;padding:0 22px}
 .card{background:#fff;border:1px solid #e4e9f0;border-radius:14px;padding:24px;margin-bottom:16px}
-h1{font-size:25px;letter-spacing:-.02em;margin-bottom:10px}h2{font-size:16.5px;margin-bottom:12px}
+h1{font-size:25px;margin-bottom:10px}h2{font-size:16.5px;margin-bottom:12px}
 label{display:block;font-size:12.5px;color:#5b6b82;margin:12px 0 5px}
 input,select,textarea{width:100%;padding:11px 13px;border:1px solid #e4e9f0;border-radius:9px;font-size:15px;font-family:inherit;background:#fff;color:#101828}
 input:focus,select:focus,textarea:focus{outline:none;border-color:#0f62fe}textarea{min-height:88px}
@@ -1883,9 +1913,9 @@ def pg(t,b,e=""):
     return '<!doctype html><html lang=ru><head><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><title>'+t+'</title><style>'+CSS+e+'</style></head><body>'+b+'</body></html>'
 C=' body{display:flex;min-height:100vh;align-items:center;justify-content:center;padding:20px}'
 (d/"login.html").write_text(pg("Вход",'<form class=card method=post action=/login style="width:min(380px,94vw)"><h1>Панель управления</h1>{% if msg %}<div class=msg>{{ msg }}</div>{% endif %}<label>Логин</label><input name=username required><label>Пароль</label><input name=password type=password required><p style="margin-top:18px"><button class=btn style="width:100%">Войти</button></p></form>',C))
-(d/"cabinet_login.html").write_text(pg("Кабинет",'<form class=card method=post action=/login style="width:min(400px,94vw)"><h1>{{ s.site_name }}</h1><p class=hint style="margin-bottom:14px">Вход для клиентов. Код доступа выдаётся при подключении.</p>{% if msg %}<div class=msg>{{ msg }}</div>{% endif %}<label>Код доступа или телефон</label><input name=credential required placeholder="A1B2C3D4"><p style="margin-top:18px"><button class=btn style="width:100%">Войти</button></p><p class=hint style="text-align:center;margin-top:12px"><a href="/">← На главную</a></p></form>',C))
+(d/"cabinet_login.html").write_text(pg("Кабинет",'<form class=card method=post action=/login style="width:min(400px,94vw)"><h1>{{ s.site_name }}</h1><p class=hint style="margin-bottom:14px">Вход для клиентов. Код выдаётся при подключении.</p>{% if msg %}<div class=msg>{{ msg }}</div>{% endif %}<label>Код доступа или телефон</label><input name=credential required placeholder="A1B2C3D4"><p style="margin-top:18px"><button class=btn style="width:100%">Войти</button></p><p class=hint style="text-align:center;margin-top:12px"><a href="/">← На главную</a></p></form>',C))
 (d/"lock.html").write_text(pg("Вход",'<form class=card method=post action="/client/{{ c.tg_id }}/unlock" style="width:min(380px,94vw)"><h1>{{ s.site_name }}</h1><p class=hint style="margin-bottom:14px">Кабинет {{ c.name }} защищён кодовым словом</p>{% if msg %}<div class=msg>{{ msg }}</div>{% endif %}<input name=code required autofocus placeholder="КОДОВОЕ СЛОВО" style="text-align:center;letter-spacing:.15em;text-transform:uppercase;font-size:17px"><p style="margin-top:16px"><button class=btn style="width:100%">Войти</button></p></form>',C))
-(d/"privacy.html").write_text(pg("Данные",'<div class=wrap style="max-width:760px;padding:44px 22px"><p><a href="/">← На главную</a></p><h1 style="margin-top:16px">Обработка персональных данных</h1><p>{{ s.site_name }} обрабатывает данные из формы заявки: имя, телефон, почту, текст обращения — чтобы связаться и исполнять договор.</p><p style="margin-top:14px">Данные хранятся на серверах компании, третьим лицам не передаются, кроме случаев по закону. Отзыв — письмом на {% if s.site_email %}<a href="mailto:{{ s.site_email }}">{{ s.site_email }}</a>{% else %}контактный адрес{% endif %}.</p><p style="margin-top:14px">Cookie только технические, для работы кабинета.</p><p class=hint style="margin-top:24px">Редакция 01.01.2026{% if s.site_inn %} · ИНН {{ s.site_inn }}{% endif %}</p></div>'))
+(d/"privacy.html").write_text(pg("Данные",'<div class=wrap style="max-width:760px;padding:44px 22px"><p><a href="/">← На главную</a></p><h1 style="margin-top:16px">Обработка персональных данных</h1><p>{{ s.site_name }} обрабатывает данные из формы заявки: имя, телефон, почту, текст обращения — чтобы связаться и исполнять договор.</p><p style="margin-top:14px">Данные хранятся на серверах компании, третьим лицам не передаются, кроме случаев по закону. Отзыв — письмом на {% if s.site_email %}<a href="mailto:{{ s.site_email }}">{{ s.site_email }}</a>{% else %}контактный адрес{% endif %}.</p><p style="margin-top:14px">Cookie только технические.</p><p class=hint style="margin-top:24px">Редакция 01.01.2026{% if s.site_inn %} · ИНН {{ s.site_inn }}{% endif %}</p></div>'))
 (d/"client.html").write_text(pg("Кабинет",'<div class=wrap style="max-width:860px;padding:30px 22px"><h1>{{ c.name }}</h1><p class=hint>{% if c.enabled %}<span class="badge on">активен</span>{% else %}<span class="badge off">отключён</span>{% endif %} · прокси: {% if tls %}<span class="badge on">TLS</span>{% else %}<span class="badge off">HTTP</span>{% endif %}</p>{% if msg %}<div class=msg style="margin-top:14px">{{ msg }}</div>{% endif %}<div class=card style="margin-top:16px"><div class=grid><div><span class=hint>Баланс</span><h2>{{ "%.2f"|format(c.balance) }} ₽</h2></div><div><span class=hint>Тариф</span><h2>{% set mp=get_plan(c.plan_id) %}{{ mp.name if mp else "—" }}</h2></div><div><span class=hint>Трафик</span><h2>{{ used_gb }} ГБ</h2></div><div><span class=hint>До</span><h2>{{ paid_str }}</h2></div></div>{% if c.limit_gb %}<p class=hint>Лимит {{ "%g"|format(c.limit_gb) }} ГБ · {{ percent }}%</p>{% endif %}</div><div class=card><h2>Тарифы</h2>{% for p in get_plans() %}<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:11px 0;border-bottom:1px solid #e4e9f0"><div><b>{{ p.name }}</b> {{ "%g"|format(p.price) }} ₽ / {{ p.period_days }} дн.<div class=hint>{% if p.limit_gb %}{{ "%g"|format(p.limit_gb) }} ГБ{% else %}безлимит{% endif %}</div></div><form method=post action="/client/{{ c.tg_id }}/plan/{{ p.id }}"><button class="btn sm">Подключить</button></form></div>{% else %}<p class=hint>Не настроены</p>{% endfor %}<div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap"><form method=post action="/client/{{ c.tg_id }}/promo" style="display:flex;gap:8px;flex:1"><input name=code placeholder="Промокод" style="flex:1;text-transform:uppercase"><button class="btn g">OK</button></form><form method=post action="/client/{{ c.tg_id }}/topup"><button class="btn o">Пополнить</button></form></div></div>{% if has_plan(c) or s.require_plan!="1" %}<div class=card><h2>Подключение — QR</h2><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px"><div style="text-align:center"><img src="{{ qr(vless) }}" style="width:100%;max-width:185px"><div class=hint>VLESS</div></div><div style="text-align:center"><img src="{{ qr(sub) }}" style="width:100%;max-width:185px"><div class=hint>Подписка</div></div></div><label>VLESS</label><input id=v readonly value="{{ vless }}"><label>Подписка</label><input id=su readonly value="{{ sub }}"><p style="margin-top:12px"><button class="btn o" onclick="cp(\'v\')">Копировать VLESS</button> <button class="btn o" onclick="cp(\'su\')">Копировать подписку</button></p></div>{% if c.http_port %}<div class=card><h2>Расширение браузера</h2><p>Код: <code style="font-size:17px">{{ c.ext_key }}</code></p><p style="margin-top:12px"><a class=btn href="/extension.zip">Скачать</a></p><p class=hint>chrome://extensions → режим разработчика → загрузить распакованное → ввести код.</p></div>{% endif %}{% else %}<div class=card style="text-align:center"><h2>Подключите тариф</h2><p class=hint>Ссылки и QR появятся после подключения.</p></div>{% endif %}<div class=card><h2>Кодовое слово</h2><p class=hint>Текущее: <code>{{ c.access_code or "отключено" }}</code></p><form method=post action="/client/{{ c.tg_id }}/setcode" style="display:flex;gap:8px;margin-top:10px"><input name=new placeholder="Новое" style="flex:1;text-transform:uppercase"><button class=btn>Сохранить</button></form></div></div><script>function cp(i){const e=document.getElementById(i);e.select();navigator.clipboard.writeText(e.value)}</script>'))
 LAND='''<!doctype html><html lang=ru><head><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
 <title>{{ s.site_name }} — {{ s.site_tagline }}</title><style>'''+CSS+'''
@@ -2130,7 +2160,6 @@ async function upd(){document.getElementById('updOut').value=(await (await fetch
 async function prb(){document.getElementById('prbOut').value=JSON.stringify(await (await fetch('/api/probe')).json(),null,1);}
 </script>''')
 (d/"admin.html").write_text(pg("Админка","".join(H)))
-
 A=['<main class=wrap style="padding:24px"><h1>🔑 Доступы и сервисы</h1>{% if msg %}<div class=msg>{{ msg }}</div>{% endif %}',
 '<div class=card><h2>Адреса</h2><div class=tablewrap><table>',
 '<tr><td>Сайт</td><td><a href="{{ base }}/" target=_blank>{{ base }}/</a></td></tr>',
@@ -2138,14 +2167,14 @@ A=['<main class=wrap style="padding:24px"><h1>🔑 Доступы и серви�
 '<tr><td>Админка</td><td><a href="{{ s.admin_url }}" target=_blank>{{ s.admin_url }}</a></td></tr>',
 '<tr><td>Веб-терминал</td><td><a href="https://{{ s.domain or ip }}:2087" target=_blank>https://{{ s.domain or ip }}:2087</a></td></tr>',
 '<tr><td>Файлы</td><td><a href="https://{{ s.domain or ip }}:2083" target=_blank>https://{{ s.domain or ip }}:2083</a></td></tr>',
-'<tr><td>Резервный канал</td><td><a href="https://{{ s.domain or ip }}:8444/{{ tok }}/" target=_blank>https://{{ s.domain or ip }}:8444/{{ tok }}/</a></td></tr>',
+'<tr><td>Резерв</td><td><a href="https://{{ s.domain or ip }}:8444/{{ tok }}/" target=_blank>https://{{ s.domain or ip }}:8444/{{ tok }}/</a></td></tr>',
 '</table></div></div>',
 '<form method=post action="/access/creds"><div class=card><h2>Пароль терминала и файлов</h2>',
-'<p class=hint>Один логин/пароль для веб-терминала (:2087) и файлового менеджера (:2083). Применяется сразу.</p>',
+'<p class=hint>Один логин/пароль для :2087 и :2083. Применяется сразу.</p>',
 '<div class=grid><div><label>Логин</label><input name=web_user value="{{ s.web_user }}"></div>',
 '<div><label>Пароль (пусто = сгенерировать)</label><input name=web_pass value="{{ s.web_pass }}"></div></div>',
 '<div class=actions style="margin-top:14px"><button class=btn>💾 Применить</button>',
-'<button class="btn o" name=gen value=1>🎲 Сгенерировать новый</button></div></div></form>',
+'<button class="btn o" name=gen value=1>🎲 Сгенерировать</button></div></div></form>',
 '<div class=card><h2>Пароль админки</h2><form method=post action="/security"><div class=grid>',
 '<div><label>Старый</label><input name=old type=password required></div>',
 '<div><label>Новый (мин 6)</label><input name=new type=password required></div>',
@@ -2156,7 +2185,7 @@ A=['<main class=wrap style="padding:24px"><h1>🔑 Доступы и серви�
 '<td><div class=actions><form method=post action="/access/svc/{{ n }}/restart"><button class="btn sm o">↻</button></form>',
 '<form method=post action="/access/svc/{{ n }}/stop"><button class="btn sm r">■</button></form>',
 '<form method=post action="/access/svc/{{ n }}/start"><button class="btn sm g">▶</button></form></div></td></tr>{% endfor %}',
-'</table></div><p class=hint>Выключай веб-терминал и файлы, когда не пользуешься — снаружи их не будет видно.</p></div>',
+'</table></div><p class=hint>Выключай терминал и файлы, когда не пользуешься.</p></div>',
 '<div class=card><h2>Резервный канал</h2><input readonly value="https://{{ s.domain or ip }}:8444/{{ tok }}/">',
 '<div class=actions style="margin-top:12px"><form method=post action="/access/rescue"><button class="btn o">🔄 Новый токен</button></form></div></div>',
 '<div class=card><h2>Гостевая диагностика</h2><p>{% if s.guest_enabled=="1" %}<span class="badge on">вкл</span>{% else %}<span class="badge off">выкл</span>{% endif %}</p>',
@@ -2165,40 +2194,43 @@ A=['<main class=wrap style="padding:24px"><h1>🔑 Доступы и серви�
 '<input readonly style="margin-top:12px" value="{{ base }}/guest/{{ s.guest_token }}"></div>',
 '<p><a href="/">← В админку</a></p></main>']
 (d/"access.html").write_text(pg("Доступы","".join(A)))
-
-C=['<main class=wrap style="padding:24px"><h1>🔐 Сертификаты</h1>{% if msg %}<div class=msg>{{ msg }}</div>{% endif %}',
+C=['<main class=wrap style="padding:24px"><h1>🔐 Сертификаты и адрес</h1>{% if msg %}<div class=msg>{{ msg }}</div>{% endif %}',
 '<div class=card><h2>Состояние</h2><div class=grid>',
-'<div><span class=hint>IP</span><h2>{{ ip }}</h2></div><div><span class=hint>Домен</span><h2>{{ s.domain or "—" }}</h2></div>',
-'<div><span class=hint>Доверенный</span><h2>{% if trusted %}<span class="badge on">да</span>{% else %}<span class="badge off">нет</span>{% endif %}</h2></div>',
+'<div><span class=hint>Публичный IP (авто)</span><h2>{{ pub or "—" }}</h2></div>',
+'<div><span class=hint>Локальный IP (VM)</span><h2>{{ loc or "—" }}</h2></div>',
+'<div><span class=hint>Используется</span><h2>{{ ip }}</h2></div>',
+'<div><span class=hint>Домен</span><h2>{{ s.domain or "—" }}</h2></div>',
+'<div><span class=hint>Доверенный серт</span><h2>{% if trusted %}<span class="badge on">да</span>{% else %}<span class="badge off">нет</span>{% endif %}</h2></div>',
 '<div><span class=hint>Прокси</span><h2>{% if tlson %}<span class="badge on">TLS</span>{% else %}<span class="badge off">HTTP</span>{% endif %}</h2></div></div>',
-'<p class=hint>Выбран: <code>{{ chosen or "нет" }}</code></p></div>',
-'<div class=card><h2>Найденные (автопоиск)</h2><div class=tablewrap><table><tr><th>Файл</th><th>CN</th><th>Дней</th><th>Доверенный</th><th>Совпадает</th></tr>',
+'<p class=hint>Выбран: <code>{{ chosen or "нет" }}</code></p>',
+'<p class=hint>Виртуалка за NAT: если публичный IP определился неверно, впиши нужный ниже — он пойдёт в ссылки и сертификаты.</p></div>',
+'<div class=card><h2>Найденные сертификаты (автопоиск)</h2><div class=tablewrap><table><tr><th>Файл</th><th>CN</th><th>Дней</th><th>Доверенный</th><th>Совпадает</th></tr>',
 '{% for c in certs %}<tr><td><code>{{ c.cert }}</code><br><span class=hint>{{ c.src }}</span></td><td>{{ c.cn }}</td><td>{{ c.days }}</td>',
 '<td>{% if c.trusted %}<span class="badge on">да</span>{% else %}<span class="badge off">нет</span>{% endif %}</td>',
 '<td>{% if c.match %}<span class="badge on">да</span>{% else %}<span class="badge off">нет</span>{% endif %}</td></tr>{% else %}<tr><td colspan=5>Нет</td></tr>{% endfor %}',
 '</table></div><p class=hint>Ищем в /root/cert/*, /etc/letsencrypt/live/*, /etc/x-ui/cert/*, /opt/cert/*.</p></div>',
-'<form method=post action="/certs/apply"><div class=card><h2>Режим</h2><div class=grid>',
-'<div><label>Выбор</label><select name=cert_mode>',
+'<form method=post action="/certs/apply"><div class=card><h2>Настройки</h2><div class=grid>',
+'<div><label>IP сервера (пусто = авто)</label><input name=server_ip value="{{ s.server_ip }}" placeholder="{{ pub }}"></div>',
+'<div><label>Домен (пусто = по IP)</label><input name=domain value="{{ s.domain }}"></div>',
+'<div><label>Режим сертификата</label><select name=cert_mode>',
 '<option value=auto {% if s.cert_mode=="auto" %}selected{% endif %}>Авто — лучший доверенный</option>',
 '<option value=manual {% if s.cert_mode=="manual" %}selected{% endif %}>Вручную — пути ниже</option>',
 '<option value=self {% if s.cert_mode=="self" %}selected{% endif %}>Самоподписанный</option></select></div>',
-'<div><label>Домен (пусто = IP)</label><input name=domain value="{{ s.domain }}"></div>',
-'<div><label>fullchain.pem</label><input name=tls_cert value="{{ s.tls_cert }}"></div>',
-'<div><label>privkey.pem</label><input name=tls_key value="{{ s.tls_key }}"></div>',
-'<div><label>Email для LE</label><input name=le_email value="{{ s.le_email }}"></div>',
+'<div><label>fullchain.pem</label><input name=tls_cert value="{{ s.tls_cert }}" placeholder="/root/cert/домен/fullchain.pem"></div>',
+'<div><label>privkey.pem</label><input name=tls_key value="{{ s.tls_key }}" placeholder="/root/cert/домен/privkey.pem"></div>',
+'<div><label>Email для Let\'s Encrypt</label><input name=le_email value="{{ s.le_email }}"></div>',
 '<div><label>TLS прокси</label><select name=proxy_tls><option value=1 {% if s.proxy_tls!="0" %}selected{% endif %}>вкл при доверенном</option><option value=0 {% if s.proxy_tls=="0" %}selected{% endif %}>выкл</option></select></div></div>',
 '<div class=actions style="margin-top:14px"><button class=btn>💾 Применить везде</button>',
 '<button type=button class="btn o" onclick=cs()>📄 Статус</button></div>',
-'<p class=hint>Пересобирает nginx (443/8443/2096/2087/2083), ставит TLS на прокси xray, перезапускает резерв.</p></div></form>',
+'<p class=hint>Пересобирает nginx (443/8443/2096/2087/2083), ставит TLS на прокси xray, обновляет ссылки, перезапускает резерв.</p></div></form>',
 '<div class=card><h2>Выпуск</h2><div class=actions>',
 '<form method=post action="/certs/le"><button class="btn g">🔒 Let\'s Encrypt</button></form>',
 '<form method=post action="/certs/proxy"><button class="btn o">🔁 TLS только прокси</button></form></div>',
 '<textarea id=csOut class=big readonly style="margin-top:12px"></textarea></div>',
 '<p><a href="/">← В админку</a></p></main><script>async function cs(){document.getElementById("csOut").value=(await (await fetch("/certs/status")).json()).text||""}</script>']
 (d/"certs.html").write_text(pg("Сертификаты","".join(C)))
-
 S=['<main class=wrap style="padding:24px"><h1>🌐 Публичный сайт</h1>{% if msg %}<div class=msg>{{ msg }}</div>{% endif %}',
-'<div class=card><p class=hint>Нейтральный сайт IT-компании. Про прокси ничего нет. <a href="/" target=_blank>Открыть →</a></p></div>',
+'<div class=card><p class=hint>Нейтральный сайт IT-компании. <a href="/" target=_blank>Открыть →</a></p></div>',
 '<form method=post action="/site"><div class=card><h2>Реквизиты</h2><div class=grid>',
 '<div><label>Название</label><input name=site_name value="{{ s.site_name }}"></div>',
 '<div><label>Телефон</label><input name=site_phone value="{{ s.site_phone }}"></div>',
@@ -2217,7 +2249,7 @@ PY_ADM
 
 echo "=========== 6. Расширение ==========="
 cat > extension/manifest.json <<'EXT_M'
-{"manifest_version":3,"name":"PM Client","version":"8.0",
+{"manifest_version":3,"name":"PM Client","version":"9.0",
 "description":"Корпоративный клиент доступа. Настройки выдаёт сервер.",
 "permissions":["proxy","storage","webRequest","webRequestAuthProvider","alarms"],
 "host_permissions":["<all_urls>"],"background":{"service_worker":"background.js"},
@@ -2394,8 +2426,7 @@ class H(http.server.BaseHTTPRequestHandler):
             c="".join('<a href="/%s/cmd/%s">%s</a>'%(TOKEN,k,k) for k in CMDS)
             return self._s(200,PAGE.replace("__T__",TOKEN).replace("__S__",s).replace("__C__",c),"text/html; charset=utf-8")
         if r[0]=="report": return self._s(200,report())
-        if r[0]=="restart" and len(r)>1 and r[1] in SVC:
-            return self._s(200,run(["systemctl","restart",r[1]],40) or "ok")
+        if r[0]=="restart" and len(r)>1 and r[1] in SVC: return self._s(200,run(["systemctl","restart",r[1]],40) or "ok")
         if r[0]=="cmd" and len(r)>1 and r[1] in CMDS: return self._s(200,run(CMDS[r[1]],120))
         return self._s(404,"not found")
 class S(socketserver.ThreadingMixIn,http.server.HTTPServer): daemon_threads=True
@@ -2432,16 +2463,16 @@ python3 -m venv venv || exit 1
 ./venv/bin/pip install -q "fastapi>=0.110" "uvicorn>=0.29" "aiogram>=3.7,<4" requests aiosqlite \
   "apscheduler>=3.10,<4" jinja2 python-multipart passlib "bcrypt==4.0.1" "pydantic>=2" qrcode pillow cryptography
 ./venv/bin/python -c "import common;common.init_db();print('БД ok')" || exit 1
-./venv/bin/python -c "import common as c;c.setS({'web_user':'admin','web_pass':'$WP0','_fb_prev':'admin'})"
+./venv/bin/python -c "import common as c;c.setS({'web_user':'admin','web_pass':'$WP0','_fb_prev':'admin','server_ip':'$PUB_IP'})"
 [ -n "$DOMAIN" ] && ./venv/bin/python -c "import common;common.setS({'domain':'$DOMAIN'})"
 for m in common xui_api admin_app web_app bot monitor; do
   ./venv/bin/python -c "import $m" 2>/dev/null && echo "  OK $m" || echo "  FAIL $m"; done
 ./venv/bin/python - <<'CHK'
 import admin_app,web_app,common as cm
-s=cm.S()
+s=cm.S(); pub,loc=cm.ips(s)
 admin_app.T.env.get_template("admin.html").render(s=s,clients=cm.clients(),suggestions=[],msg="",user="a")
-admin_app.T.env.get_template("certs.html").render(s=s,msg="",certs=cm.cert_list(s),chosen=cm.tlspaths(s)[0],trusted=cm.cert_trusted(s),tlson=cm.tlson(s),ip=cm.server_ip())
-admin_app.T.env.get_template("access.html").render(s=s,msg="",tok=cm.rescue_token(),st=cm.svc_state(),base=cm.pbase(s),ip=cm.server_ip())
+admin_app.T.env.get_template("certs.html").render(s=s,msg="",certs=cm.cert_list(s),chosen=cm.tlspaths(s)[0],trusted=cm.cert_trusted(s),tlson=cm.tlson(s),ip=cm.server_ip(s),pub=pub,loc=loc)
+admin_app.T.env.get_template("access.html").render(s=s,msg="",tok=cm.rescue_token(),st=cm.svc_state(),base=cm.pbase(s),ip=cm.server_ip(s))
 admin_app.T.env.get_template("site.html").render(s=s,msg="")
 web_app.T.env.get_template("landing.html").render(s=s,msg="")
 print("шаблоны ok")
@@ -2450,7 +2481,7 @@ CHK
 echo "=========== 9. Автопоиск сертификата ==========="
 ./venv/bin/python - <<'PYC'
 import common as cm,socket
-s=cm.S(); ip=cm.server_ip()
+s=cm.S(); ip=cm.server_ip(s)
 print("Найденные сертификаты:")
 for x in cm.cert_list(s):
     print(f"  {x['cert']} CN={x['cn']} дней={x['days']} доверенный={x['trusted']} совпадает={x['match']}")
@@ -2510,7 +2541,7 @@ echo; echo "============================================================"
 systemctl is-active proxy-admin proxy-web proxy-bot proxy-monitor nginx web-term web-files rescue-agent
 cat <<SUM
 
- ✅ ВСЁ УСТАНОВЛЕНО — адрес ${B}
+ ✅ УСТАНОВЛЕНО — адрес ${B}
 ------------------------------------------------------------
  🌐 Сайт            https://${B}/
  🔑 Кабинет клиента https://${B}/login
@@ -2519,17 +2550,17 @@ cat <<SUM
  📁 Файлы           https://${B}:2083   admin / ${WP}
  🛟 Резерв          https://${B}:8444/${RT}/
 ------------------------------------------------------------
- В АДМИНКЕ сверху кнопки:
+ В админке сверху:
  🔑 Доступы      — пароли терминала/файлов/админки, вкл-выкл сервисов
- 🔐 Сертификаты  — автопоиск, свой путь, Let's Encrypt, применить везде
- 🌐 Сайт         — тексты нейтрального лендинга
+ 🔐 Сертификаты  — IP (авто/вручную), домен, автопоиск, свой путь, LE
+ 🌐 Сайт         — тексты лендинга
 ------------------------------------------------------------
  Доверенный сертификат: ${TR}   Шифрование прокси: ${TL}
 ------------------------------------------------------------
  1) ⚙️ Настройки → 3x-ui: URL/логин/пароль → Сохранить → 🪄 Подтянуть
  2) ⚙️ Настройки → Telegram: токен + свой ID
  3) 🔑 Доступы → смени пароль admin/admin и пароль терминала
- 4) 🔐 Сертификаты → «Применить везде» (если серт уже есть — подхватится)
+ 4) 🔐 Сертификаты → проверь IP → «Применить везде»
  5) Клиенты → Добавить → код и ключ клиенту
  6) Расширение: https://${B}:8443/extension.zip
 ------------------------------------------------------------
@@ -2538,5 +2569,5 @@ cat <<SUM
 ============================================================
 SUM
 [ -s "$ERRF" ] && { echo; echo "⚠️ Ошибки:"; cat "$ERRF"; }
-PART2
+PART3
 bash t.sh
